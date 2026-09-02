@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "NLSQL Helm values",
+  "type": "object",
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "image": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^(sha256:[a-f0-9]{64})?$"
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
+      },
+      "required": [
+        "repo"
+      ]
+    },
+    "database": {
+      "type": "object",
+      "properties": {
+        "DatabaseType": {
+          "type": "string",
+          "enum": [
+            "MSSQL",
+            "MySQL",
+            "PostgreSQL",
+            "Oracle",
+            "Snowflake"
+          ]
+        },
+        "DataSource": {
+          "type": "string"
+        },
+        "DbName": {
+          "type": "string"
+        },
+        "DbPort": {
+          "type": [
+            "string",
+            "integer"
+          ],
+          "description": "String or integer; normalised to a string in the ConfigMap."
+        },
+        "DbSchema": {
+          "type": "string"
+        },
+        "DbUser": {
+          "type": "string"
+        },
+        "ssl": {
+          "type": [
+            "string",
+            "boolean",
+            "integer"
+          ],
+          "description": "Accepts True/true/1 or the boolean true; normalised to \"True\"/\"False\"."
+        }
+      },
+      "required": [
+        "DatabaseType",
+        "DataSource",
+        "DbName",
+        "DbPort",
+        "DbUser"
+      ]
+    },
+    "nlsql": {
+      "type": "object",
+      "properties": {
+        "ApiEndPoint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "StaticEndPoint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ApiEndPoint"
+      ]
+    },
+    "credentials": {
+      "type": "object",
+      "properties": {
+        "existingSecret": {
+          "type": "string"
+        },
+        "ApiToken": {
+          "type": "string"
+        },
+        "AppPassword": {
+          "type": "string"
+        },
+        "DbPassword": {
+          "type": "string"
+        }
+      }
+    },
+    "autoscaling": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "minReplicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxReplicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "targetCPUUtilizationPercentage": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      }
+    }
+  },
+  "required": [
+    "image",
+    "database",
+    "nlsql",
+    "credentials"
+  ]
+}

@@ -1,0 +1,32 @@
+x-google-marketplace:
+  schemaVersion: v2
+  applicationApiVersion: v1beta1
+  publishedVersion: "1.2.0"
+  publishedVersionMetadata:
+    releaseNote: >-
+      Integration test for NLSQL.
+  images:
+    '':
+      properties:
+        image.repo:
+          type: REPO_WITH_REGISTRY
+        image.tag:
+          type: TAG
+
+properties:
+  name:
+    type: string
+    x-google-marketplace:
+      type: NAME
+  namespace:
+    type: string
+    x-google-marketplace:
+      type: NAMESPACE
+  targetRelease:
+    type: string
+    title: Name of the NLSQL release under test
+    default: ""
+
+required:
+  - name
+  - namespace

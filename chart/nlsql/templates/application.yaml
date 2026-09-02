@@ -1,0 +1,90 @@
+{{- /*
+The Application custom resource is mandatory for a Google Cloud Marketplace
+Kubernetes app. The Marketplace deployer waits on it to report healthy, and the
+Google Cloud console renders the listing's app page from `spec.descriptor` and
+`spec.info`. `addOwnerRef: true` makes every component below a child of this
+resource, so deleting the Application garbage-collects the whole install.
+*/}}
+apiVersion: app.k8s.io/v1beta1
+kind: Application
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nlsql.labels" . | nindent 4 }}
+  annotations:
+    kubernetes-engine.cloud.google.com/icon: "https://www.nlsql.com/favicon.ico"
+    # TODO(nlsql): replace with the partner and product IDs shown in Producer Portal.
+    marketplace.cloud.google.com/deploy-info: >-
+      {"partner_id": "PARTNER_ID", "product_id": "nlsql", "partner_name": "NLSQL"}
+spec:
+  descriptor:
+    type: NLSQL
+    version: {{ .Chart.AppVersion | quote }}
+    description: |-
+      NLSQL turns plain-English questions into SQL against your existing relational
+      database and returns the answer in your chat tool. No data leaves your cluster:
+      the container connects directly to the database you configure at install time.
+    maintainers:
+      - name: NLSQL
+        email: support@nlsql.com
+    links:
+      - description: NLSQL website
+        url: https://www.nlsql.com
+      - description: Deployment documentation
+        url: https://github.com/denissa4/nlsql-gcp-marketplace/blob/main/README.md
+      # TODO(nlsql): replace with the published Cloud Marketplace listing URL.
+      - description: Cloud Marketplace listing
+        url: LISTING_URL
+    notes: |-
+      # Getting started
+
+      NLSQL is reachable inside the cluster at
+      `http://{{ include "nlsql.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}`.
+
+      Check that it is healthy:
+
+      ```
+      kubectl port-forward --namespace {{ .Release.Namespace }} \
+        svc/{{ include "nlsql.fullname" . }} 8080:{{ .Values.service.port }}
+      curl http://localhost:8080/health
+      ```
+
+      To expose NLSQL publicly, see the "Expose the application" section of the
+      deployment documentation.
+  info:
+    - name: Service name
+      value: {{ include "nlsql.fullname" . }}
+    - name: Namespace
+      value: {{ .Release.Namespace }}
+    - name: Health check
+      value: "http://{{ include "nlsql.fullname" . }}:{{ .Values.service.port }}/health"
+    - name: Database engine
+      value: {{ .Values.database.DatabaseType | quote }}
+    - name: Database host
+      value: {{ .Values.database.DataSource | quote }}
+    - name: Credentials Secret
+      value: {{ include "nlsql.secretName" . }}
+  componentKinds:
+    - group: apps/v1
+      kind: Deployment
+    - group: v1
+      kind: Service
+    - group: v1
+      kind: ConfigMap
+    - group: v1
+      kind: Secret
+    - group: v1
+      kind: ServiceAccount
+    {{- if .Values.ingress.enabled }}
+    - group: networking.k8s.io/v1
+      kind: Ingress
+    {{- end }}
+    {{- if .Values.autoscaling.enabled }}
+    - group: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+    {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  addOwnerRef: true

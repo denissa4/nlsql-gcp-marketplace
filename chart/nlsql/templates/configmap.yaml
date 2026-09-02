@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nlsql.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nlsql.labels" . | nindent 4 }}
+data:
+  {{- /* NLSQL application settings. */}}
+  ApiEndPoint: {{ .Values.nlsql.ApiEndPoint | quote }}
+  StaticEndPoint: {{ required "nlsql.StaticEndPoint is required: set it to the URL users reach NLSQL on." .Values.nlsql.StaticEndPoint | quote }}
+
+  {{- /* Database connection. */}}
+  DatabaseType: {{ .Values.database.DatabaseType | quote }}
+  DataSource: {{ required "database.DataSource is required: set it to your database host." .Values.database.DataSource | quote }}
+  DbName: {{ required "database.DbName is required." .Values.database.DbName | quote }}
+  DbPort: {{ .Values.database.DbPort | quote }}
+  DbSchema: {{ .Values.database.DbSchema | quote }}
+  DbUser: {{ required "database.DbUser is required." .Values.database.DbUser | quote }}
+  {{- /* Accept True/true/1 and the YAML boolean true; the app expects exactly "True". */}}
+  ssl: {{ ternary "True" "False" (has (lower (toString .Values.database.ssl)) (list "true" "1" "yes")) | quote }}
+
+  {{- /* Microsoft Teams channel (optional). */}}
+  MicrosoftAppId: {{ .Values.teams.MicrosoftAppId | quote }}
+  MicrosoftAppTenantId: {{ .Values.teams.MicrosoftAppTenantId | quote }}
+  MicrosoftAppType: {{ .Values.teams.MicrosoftAppType | quote }}
+
+  {{- /* Legacy Azure App Service variables: inert on GKE, kept for parity. */}}
+  {{- range $key, $value := .Values.legacyEnv }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}

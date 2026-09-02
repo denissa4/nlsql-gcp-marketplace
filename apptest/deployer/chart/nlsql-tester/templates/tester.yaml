@@ -1,0 +1,46 @@
+{{- $svc := include "nlsql-tester.targetService" . -}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ .Release.Name }}-tester
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: nlsql-tester
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    # Tells the Cloud Marketplace verification system which Pod to watch for the
+    # test result. A zero exit status is a pass; anything else is a failure.
+    marketplace.cloud.google.com/verification: test
+spec:
+  restartPolicy: Never
+  containers:
+    - name: tester
+      # Reuse the application image rather than pulling a separate tool image: it
+      # already ships Python, and it is the only image this listing publishes.
+      image: "{{ .Values.image.repo }}:{{ .Values.image.tag }}"
+      command:
+        - python3
+        - -c
+        - |
+          import sys, time, urllib.request
+
+          url = "http://{{ $svc }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}/health"
+          deadline = time.time() + {{ .Values.timeoutSeconds }}
+          attempt = 0
+          last = None
+
+          while time.time() < deadline:
+              attempt += 1
+              try:
+                  with urllib.request.urlopen(url, timeout=5) as r:
+                      if r.status == 200:
+                          print("PASS: {} returned 200 on attempt {}".format(url, attempt))
+                          sys.exit(0)
+                      last = "HTTP {}".format(r.status)
+              except Exception as e:
+                  last = repr(e)
+              print("attempt {}: not ready yet ({})".format(attempt, last))
+              time.sleep(10)
+
+          print("FAIL: {} never returned 200 within {{ .Values.timeoutSeconds }}s. Last result: {}".format(url, last))
+          sys.exit(1)

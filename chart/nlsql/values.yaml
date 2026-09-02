@@ -1,0 +1,186 @@
+# NLSQL Helm chart values.
+#
+# SECURITY: this file is published in a public repository. It must never contain
+# credentials. Every secret value below is empty by default and MUST be supplied at
+# install time (see the "Install the Application" section of README.md).
+
+# -- Number of NLSQL replicas. See the "Scaling" section of README.md.
+replicaCount: 1
+
+image:
+  # -- Image repository, including the registry host. Cloud Marketplace substitutes
+  # this with the release's registry path (schema.yaml type REPO_WITH_REGISTRY).
+  repo: gcr.io/MARKETPLACE_PROJECT_ID/nlsql
+  # -- Image tag. Cloud Marketplace substitutes the release tag (schema.yaml type TAG).
+  # For CLI installs, prefer pinning by digest instead - see `image.digest`.
+  tag: "1.2.0"
+  # -- Optional immutable digest, e.g. "sha256:abc123...". When set it takes precedence
+  # over `image.tag`. Cloud Marketplace requires documented installs to pin by digest.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# -- Image pull secrets. Not required for images in the customer-readable Marketplace
+# registry; set only if you mirror the image into a private registry.
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # -- Create a dedicated ServiceAccount for the NLSQL pods.
+  create: true
+  automount: true
+  annotations: {}
+  # -- Leave empty to use the generated name (<release>-nlsql).
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: false
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  # -- NLSQL serves HTTP directly on port 80.
+  port: 80
+
+ingress:
+  # -- Expose NLSQL outside the cluster through a GCE (Google Cloud Load Balancer)
+  # Ingress. Disabled by default: enable it and set `ingress.hosts` once you have a
+  # hostname. See the "Expose the application" section of README.md.
+  enabled: false
+  className: "gce"
+  annotations: {}
+  #   kubernetes.io/ingress.global-static-ip-name: nlsql-ip
+  #   networking.gke.io/managed-certificates: nlsql-cert
+  hosts:
+    - host: ""
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: "1000m"
+    memory: "512Mi"
+  requests:
+    cpu: "500m"
+    memory: "256Mi"
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ---------------------------------------------------------------------------
+# NLSQL application configuration
+#
+# Environment variable names are the application's own and use the container's
+# PascalCase convention (ApiEndPoint, DbUser, ...). Do not normalise them.
+# ---------------------------------------------------------------------------
+
+nlsql:
+  # -- NLSQL API endpoint for your integration channel.
+  ApiEndPoint: "https://api.nlsql.com/googlesheet"
+
+  # -- Public URL users reach NLSQL on. On GKE this is your Ingress hostname
+  # (for example "https://nlsql.example.com/"). Required.
+  StaticEndPoint: ""
+
+database:
+  # -- Database engine. One of: MSSQL, MySQL, PostgreSQL, Oracle, Snowflake.
+  DatabaseType: "MSSQL"
+  # -- Database host, reachable from the GKE cluster. Required.
+  DataSource: ""
+  # -- Database name. Required.
+  DbName: ""
+  # -- Database port. Defaults differ per engine (MSSQL 1433, MySQL 3306,
+  # PostgreSQL 5432).
+  DbPort: "1433"
+  # -- Schema to query. Leave empty for the engine default.
+  DbSchema: ""
+  # -- Database user. Required.
+  DbUser: ""
+  # -- Require TLS on the database connection. Strongly recommended.
+  ssl: "True"
+
+# -- Microsoft Teams / Bot Framework channel. Leave the values empty to run NLSQL
+# without the Teams channel.
+teams:
+  MicrosoftAppId: ""
+  MicrosoftAppTenantId: ""
+  MicrosoftAppType: "MultiTenant"
+
+# ---------------------------------------------------------------------------
+# Credentials
+#
+# Supply these at install time. They are written into a Kubernetes Secret and
+# injected with envFrom; they are never rendered into a ConfigMap or a pod spec.
+# ---------------------------------------------------------------------------
+credentials:
+  # -- Name of a pre-existing Secret holding ApiToken, AppPassword and DbPassword.
+  # When set, the chart does not create a Secret and the three values below are
+  # ignored. This is the recommended path - see README.md.
+  existingSecret: ""
+
+  # -- NLSQL API token. Required unless `credentials.existingSecret` is set.
+  ApiToken: ""
+  # -- Bot channel application password. Required only when the Teams channel is used.
+  AppPassword: ""
+  # -- Database password. Required unless `credentials.existingSecret` is set.
+  DbPassword: ""
+
+# ---------------------------------------------------------------------------
+# Legacy Azure App Service variables.
+#
+# NLSQL was previously hosted on Azure App Service and the container still reads
+# these names. They have no effect on GKE and are kept only so the container's
+# environment matches across platforms. They are deliberately not exposed in the
+# Cloud Marketplace UI (schema.yaml).
+# ---------------------------------------------------------------------------
+legacyEnv:
+  DEBUG: "0"
+  PYTHONUNBUFFERED: "1"
+  DOCKER_ENABLE_CI: "true"
+  DOCKER_REGISTRY_SERVER_URL: "https://index.docker.io/v1"
+  WEBSITE_HTTPLOGGING_RETENTION_DAYS: "3"
+  WEBSITES_ENABLE_APP_SERVICE_STORAGE: "false"
+
+# ---------------------------------------------------------------------------
+# Cloud Marketplace integration
+# ---------------------------------------------------------------------------
+
+# -- Marketplace reporting Secret name, created by the Marketplace deployer for
+# commercial (usage-based) listings. Leave empty for BYOL / manual installs.
+reportingSecret: ""

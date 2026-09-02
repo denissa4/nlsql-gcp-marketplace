@@ -1,0 +1,199 @@
+x-google-marketplace:
+  schemaVersion: v2
+  applicationApiVersion: v1beta1
+
+  # Must match chart/nlsql/Chart.yaml `appVersion` and the release's display tag.
+  publishedVersion: "1.2.0"
+  publishedVersionMetadata:
+    releaseNote: >-
+      NLSQL on Google Kubernetes Engine. Connects to your existing MSSQL, MySQL,
+      PostgreSQL, Oracle or Snowflake database and answers plain-English questions
+      with SQL results.
+    releaseTypes:
+      - Feature
+    recommended: true
+
+  images:
+    # Primary image. Cloud Marketplace rewrites these two values to the release's
+    # own registry path and tag at deploy time.
+    '':
+      properties:
+        image.repo:
+          type: REPO_WITH_REGISTRY
+        image.tag:
+          type: TAG
+
+  clusterConstraints:
+    k8sVersion: ">=1.29.0"
+    resources:
+      - replicas: 1
+        requests:
+          cpu: 500m
+          memory: 256Mi
+
+properties:
+  name:
+    type: string
+    x-google-marketplace:
+      type: NAME
+  namespace:
+    type: string
+    x-google-marketplace:
+      type: NAMESPACE
+
+  # --- NLSQL application ------------------------------------------------------
+  nlsql.ApiEndPoint:
+    type: string
+    title: NLSQL API endpoint
+    description: >-
+      The NLSQL API endpoint for your integration channel. Use the value shown in
+      your NLSQL account; the default suits the Google Sheets channel.
+    default: "https://api.nlsql.com/googlesheet"
+
+  nlsql.StaticEndPoint:
+    type: string
+    title: Public application URL
+    description: >-
+      The URL your users will reach NLSQL on, including the scheme and a trailing
+      slash - for example https://nlsql.example.com/. This must be the hostname you
+      point at the Ingress; NLSQL uses it to build links back to itself.
+    pattern: '^https?://.+/$'
+
+  credentials.ApiToken:
+    type: string
+    title: NLSQL API token
+    description: The API token issued with your NLSQL subscription.
+    x-google-marketplace:
+      type: MASKED_FIELD
+
+  # --- Database ---------------------------------------------------------------
+  database.DatabaseType:
+    type: string
+    title: Database engine
+    description: The engine NLSQL will query.
+    default: MSSQL
+    enum:
+      - MSSQL
+      - MySQL
+      - PostgreSQL
+      - Oracle
+      - Snowflake
+
+  database.DataSource:
+    type: string
+    title: Database host
+    description: >-
+      Hostname or IP of the database, reachable from this GKE cluster. For Cloud SQL,
+      use the private IP or a Cloud SQL Auth Proxy address.
+
+  database.DbName:
+    type: string
+    title: Database name
+
+  database.DbPort:
+    type: string
+    title: Database port
+    description: >-
+      Defaults per engine: MSSQL 1433, MySQL 3306, PostgreSQL 5432, Oracle 1521.
+    default: "1433"
+    pattern: '^[0-9]{1,5}$'
+
+  database.DbSchema:
+    type: string
+    title: Database schema
+    description: Leave empty to use the engine default schema.
+    default: ""
+
+  database.DbUser:
+    type: string
+    title: Database user
+    description: >-
+      A read-only user is strongly recommended. NLSQL only issues SELECT statements.
+
+  credentials.DbPassword:
+    type: string
+    title: Database password
+    x-google-marketplace:
+      type: MASKED_FIELD
+
+  database.ssl:
+    type: string
+    title: Require TLS to the database
+    default: "True"
+    enum:
+      - "True"
+      - "False"
+
+  # --- Microsoft Teams channel (optional) -------------------------------------
+  teams.MicrosoftAppId:
+    type: string
+    title: Microsoft App ID
+    description: >-
+      Bot Framework application ID. Leave empty to run NLSQL without the Microsoft
+      Teams channel.
+    default: ""
+
+  teams.MicrosoftAppTenantId:
+    type: string
+    title: Microsoft tenant ID
+    description: Required only when Microsoft App type is SingleTenant.
+    default: ""
+
+  teams.MicrosoftAppType:
+    type: string
+    title: Microsoft App type
+    default: MultiTenant
+    enum:
+      - MultiTenant
+      - SingleTenant
+      - UserAssignedMSI
+
+  credentials.AppPassword:
+    type: string
+    title: Microsoft App password
+    description: Required only when the Microsoft Teams channel is used.
+    default: ""
+    x-google-marketplace:
+      type: MASKED_FIELD
+
+  # --- Sizing -----------------------------------------------------------------
+  replicaCount:
+    type: integer
+    title: Replicas
+    description: >-
+      Number of NLSQL pods. Increase for higher concurrent query volume; see the
+      Scaling section of the deployment documentation.
+    default: 1
+    minimum: 1
+    maximum: 20
+
+  # --- Cloud Marketplace usage reporting --------------------------------------
+  reportingSecret:
+    type: string
+    title: Usage reporting Secret
+    x-google-marketplace:
+      type: REPORTING_SECRET
+
+required:
+  - name
+  - namespace
+  - nlsql.ApiEndPoint
+  - nlsql.StaticEndPoint
+  - credentials.ApiToken
+  - database.DatabaseType
+  - database.DataSource
+  - database.DbName
+  - database.DbPort
+  - database.DbUser
+  - credentials.DbPassword
+  - reportingSecret
+
+form:
+  - widget: help
+    description: >-
+      <b>Before you deploy:</b> NLSQL connects directly to a database you already run.
+      Make sure that database is reachable from this cluster and that you have a
+      read-only user for it. Full instructions, including the equivalent command-line
+      steps, are at
+      <a href="https://github.com/denissa4/nlsql-gcp-marketplace/blob/main/README.md">
+      github.com/denissa4/nlsql-gcp-marketplace</a>.

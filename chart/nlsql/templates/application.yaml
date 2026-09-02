@@ -27,7 +27,7 @@ spec:
       the container connects directly to the database you configure at install time.
     maintainers:
       - name: NLSQL
-        email: support@nlsql.com
+        email: info@nlsql.com
     links:
       - description: NLSQL website
         url: https://www.nlsql.com

@@ -2,7 +2,8 @@ x-google-marketplace:
   schemaVersion: v2
   applicationApiVersion: v1beta1
 
-  # Must match chart/nlsql/Chart.yaml `appVersion` and the release's display tag.
+  # Must match chart/nlsql/Chart.yaml `appVersion`. Release 1.2.0 sits on the 1.2
+  # release track, and every image is tagged with both - see README.md.
   publishedVersion: "1.2.0"
   publishedVersionMetadata:
     releaseNote: >-
@@ -14,9 +15,14 @@ x-google-marketplace:
     recommended: true
 
   images:
-    # Primary image. Cloud Marketplace rewrites these two values to the release's
-    # own registry path and tag at deploy time.
-    '':
+    # The NLSQL app image, declared as a NAMED image rather than the empty-key
+    # primary. Cloud Marketplace resolves a named image to <shared-prefix>/<name>,
+    # and the shared prefix here is the Artifact Registry repository
+    # us-docker.pkg.dev/nlsql-public/nlsql (fixed by the deployer sitting at
+    # <shared-prefix>/deployer). An empty-key primary would resolve to the
+    # repository root, and Artifact Registry cannot hold an image there - only
+    # child images - so the primary form would be unpullable.
+    nlsql:
       properties:
         image.repo:
           type: REPO_WITH_REGISTRY

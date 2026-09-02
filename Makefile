@@ -1,24 +1,44 @@
 # NLSQL — Google Cloud Marketplace packaging.
 #
-# Prerequisites: docker, gcloud, helm, and mpdev
-# (https://github.com/GoogleCloudPlatform/marketplace-k8s-app-tools).
+# Prerequisites: docker, gcloud, helm. `make tools` installs mpdev.
 #
-# Set these before running any target:
-#   export MARKETPLACE_PROJECT_ID=<your Marketplace-assigned GCP project>
-#   export SERVICE_NAME=<your Marketplace service name>
-#   export TAG=1.2.0
+# Set this before any target that touches the registry:
+#   export SERVICE_NAME=<your Marketplace service name, from Producer Portal Overview>
+#
+# VERSION/TRACK default to the current release; override to cut a new one:
+#   make deployer-image VERSION=1.3.0 TRACK=1.3
 
-MARKETPLACE_PROJECT_ID ?= MARKETPLACE_PROJECT_ID
-SERVICE_NAME           ?= SERVICE_NAME
-TAG                    ?= 1.2.0
+SERVICE_NAME ?= SERVICE_NAME
 
-REGISTRY  := gcr.io/$(MARKETPLACE_PROJECT_ID)/nlsql
-APP_IMAGE := $(REGISTRY):$(TAG)
-DEPLOYER  := $(REGISTRY)/deployer:$(TAG)
+# Google requires every image to carry BOTH tags:
+#   "All of your app's images must be tagged with the release track and the current
+#    version. For example, if you're releasing version 2.0.5 on the 2.0 release
+#    track, all the images must be tagged with 2.0 and 2.0.5."
+# https://docs.cloud.google.com/marketplace/docs/partners/kubernetes/create-app-package
+VERSION ?= 1.2.0
+# Release track = the MAJOR.MINOR prefix of VERSION, derived so the two cannot drift.
+TRACK   := $(basename $(VERSION))
+
+# The Marketplace registry for this listing. This is an Artifact Registry
+# repository: project `nlsql-public`, repository `nlsql`. It is the "app folder"
+# in Marketplace terms, fixed by Producer Portal showing the deployer at
+# $(REGISTRY)/deployer.
+REGISTRY  := us-docker.pkg.dev/nlsql-public/nlsql
+
+# The app is a CHILD image of that repository, not the repository root: Artifact
+# Registry serves no image at a repository root, only child images.
+APP_IMAGE := $(REGISTRY)/nlsql
+DEPLOYER  := $(REGISTRY)/deployer
 
 # The image built by the NLSQL application repository, before it is promoted into
-# the Marketplace registry.
-SOURCE_IMAGE ?= us-docker.pkg.dev/nlsql-public/nlsql/nlsql:$(TAG)
+# the Marketplace registry with the required annotation and tags.
+#
+# Defaults to :latest because that is the ONLY tag currently published on
+# .../nlsql/nlsql - there is no 1.2 or 1.2.0 tag on the app image yet. Marketplace
+# requires both, which is exactly what `promote-image` creates from this source.
+# Override to promote a specific digest instead:
+#   make promote-image SOURCE_IMAGE=$(APP_IMAGE)@sha256:...
+SOURCE_IMAGE ?= $(APP_IMAGE):latest
 
 .PHONY: help
 help:
@@ -27,25 +47,27 @@ help:
 
 .PHONY: check-vars
 check-vars:
-	@test "$(MARKETPLACE_PROJECT_ID)" != "MARKETPLACE_PROJECT_ID" \
-	  || (echo "ERROR: set MARKETPLACE_PROJECT_ID" && exit 1)
 	@test "$(SERVICE_NAME)" != "SERVICE_NAME" \
-	  || (echo "ERROR: set SERVICE_NAME" && exit 1)
+	  || (echo "ERROR: set SERVICE_NAME (Producer Portal > Overview)" && exit 1)
+
+.PHONY: tools
+tools: check-docker-auth ## Install mpdev into ./bin
+	mkdir -p bin
+	docker run --rm gcr.io/cloud-marketplace-tools/k8s/dev cat /scripts/dev > bin/mpdev
+	chmod +x bin/mpdev
+	@echo "installed bin/mpdev — add ./bin to PATH"
 
 .PHONY: configure
 configure: ## Substitute the Marketplace placeholders with your real values
 	@test -n "$(PARTNER_ID)" || (echo "ERROR: set PARTNER_ID (from Producer Portal)" && exit 1)
 	@test -n "$(LISTING_URL)" || (echo "ERROR: set LISTING_URL (the published listing page)" && exit 1)
-	@$(MAKE) --no-print-directory check-vars
-	@# Only the literal placeholders are rewritten; the Makefile's own variable
-	@# names are left alone. perl -i is portable across macOS and GNU userland.
-	grep -rl --include='*.yaml' --include='*.md' 'gcr.io/MARKETPLACE_PROJECT_ID' . \
-	  | xargs perl -pi -e 's{gcr\.io/MARKETPLACE_PROJECT_ID}{gcr.io/$(MARKETPLACE_PROJECT_ID)}g'
+	@# Only the literal placeholders are rewritten. perl -i is portable across
+	@# macOS and GNU userland.
 	grep -rl --include='*.yaml' --include='*.md' 'LISTING_URL' . \
 	  | xargs perl -pi -e 's{LISTING_URL}{$(LISTING_URL)}g'
 	grep -rl --include='*.yaml' '"PARTNER_ID"' . \
 	  | xargs perl -pi -e 's{"PARTNER_ID"}{"$(PARTNER_ID)"}g'
-	@echo "Placeholders substituted. Review the diff, then run: make lint verify"
+	@echo "Placeholders substituted. Review the diff, then run: make lint schema-check"
 
 .PHONY: lint
 lint: ## Lint and render the chart with representative values
@@ -66,22 +88,71 @@ no-secrets: ## Fail if any credential-shaped string is committed
 	  || (echo "ERROR: possible credential committed" && exit 1)
 	@echo "no credential-shaped strings found"
 
+# Some macOS python3 builds ship without PyYAML; pick one that has it.
+PYTHON := $(shell for p in python3 /usr/local/bin/python3 /opt/homebrew/bin/python3; do \
+	  command -v $$p >/dev/null 2>&1 && $$p -c 'import yaml' >/dev/null 2>&1 && echo $$p && break; done)
+
+.PHONY: schema-lint
+schema-lint: ## Validate schema.yaml against Marketplace v2 rules (offline, no Docker)
+	@test -n "$(PYTHON)" || (echo "ERROR: no python3 with PyYAML found. Run: pip3 install pyyaml" && exit 1)
+	@$(PYTHON) scripts/validate-schema.py schema.yaml chart/nlsql/values.yaml chart/nlsql/Chart.yaml
+	@$(PYTHON) scripts/validate-schema.py apptest/deployer/schema.yaml \
+	  apptest/deployer/chart/nlsql-tester/values.yaml apptest/deployer/chart/nlsql-tester/Chart.yaml
+
+.PHONY: check-docker-auth
+check-docker-auth:
+	@docker pull --quiet gcr.io/cloud-marketplace-tools/k8s/deployer_helm/onbuild >/dev/null 2>&1 \
+	  || (echo "ERROR: cannot pull Google's deployer base image."; \
+	      echo "  Google migrated cloud-marketplace-tools to Artifact Registry and"; \
+	      echo "  anonymous pulls are denied. Authenticate first:"; \
+	      echo "    gcloud auth login"; \
+	      echo "    gcloud auth configure-docker gcr.io"; \
+	      exit 1)
+
+.PHONY: schema-check
+schema-check: check-docker-auth ## Prove Producer Portal can extract the schema (needs Docker + gcloud auth)
+	docker build --quiet --platform linux/amd64 --tag nlsql-deployer:local --file deployer/Dockerfile . >/dev/null
+	@echo "--- /data/schema.yaml is byte-identical to source schema.yaml ---"
+	@docker run --rm --entrypoint cat nlsql-deployer:local /data/schema.yaml \
+	  | diff - schema.yaml && echo "identical"
+	@echo "--- /data and /data-test contents ---"
+	@docker run --rm --entrypoint find nlsql-deployer:local /data /data-test -maxdepth 2
+	@echo "--- schema parses inside the deployer image ---"
+	@docker run --rm --entrypoint python nlsql-deployer:local -c \
+	  "import yaml,sys; \
+	   d=yaml.safe_load(open('/data/schema.yaml')); \
+	   x=d['x-google-marketplace']; \
+	   print('OK: schemaVersion=%s publishedVersion=%s properties=%d images=%s' % \
+	     (x['schemaVersion'], x['publishedVersion'], len(d['properties']), list(x['images'])))"
+
 .PHONY: promote-image
-promote-image: check-vars ## Copy the app image into the Marketplace registry and annotate it
+promote-image: check-vars ## Annotate the app image and push both tags
 	docker pull $(SOURCE_IMAGE)
 	printf 'FROM $(SOURCE_IMAGE)\nLABEL com.googleapis.cloudmarketplace.product.service.name="services/$(SERVICE_NAME)"\n' \
-	  | docker build --tag $(APP_IMAGE) -
-	docker push $(APP_IMAGE)
+	  | docker build --platform linux/amd64 --tag $(APP_IMAGE):$(VERSION) --tag $(APP_IMAGE):$(TRACK) -
+	docker push $(APP_IMAGE):$(VERSION)
+	docker push $(APP_IMAGE):$(TRACK)
 
 .PHONY: deployer-image
-deployer-image: check-vars ## Build and push the Marketplace deployer image
-	docker build --tag $(DEPLOYER) --file deployer/Dockerfile .
-	docker push $(DEPLOYER)
+deployer-image: check-vars ## Build the deployer, annotate it, push both tags
+	@# The annotation is required on EVERY image, the deployer included.
+	docker build --platform linux/amd64 --file deployer/Dockerfile \
+	  --label com.googleapis.cloudmarketplace.product.service.name="services/$(SERVICE_NAME)" \
+	  --tag $(DEPLOYER):$(VERSION) --tag $(DEPLOYER):$(TRACK) .
+	docker push $(DEPLOYER):$(VERSION)
+	docker push $(DEPLOYER):$(TRACK)
+
+.PHONY: check-tags
+check-tags: ## List what is actually published, to confirm against Producer Portal
+	@echo "--- $(APP_IMAGE) ---"
+	@gcloud artifacts docker images list $(APP_IMAGE) --include-tags
+	@echo "--- $(DEPLOYER) ---"
+	@gcloud artifacts docker images list $(DEPLOYER) --include-tags
 
 .PHONY: digest
-digest: check-vars ## Print the immutable digest to quote in README.md
-	@gcloud container images describe $(APP_IMAGE) \
-	  --format='value(image_summary.fully_qualified_digest)'
+digest: ## Print the immutable digest to quote in README.md
+	@gcloud artifacts docker images describe $(APP_IMAGE):$(VERSION) \
+	  --format='value(image_summary.digest)'
 
 .PHONY: doctor
 doctor: ## Check the local mpdev environment
@@ -91,12 +162,12 @@ doctor: ## Check the local mpdev environment
 install: check-vars ## Install into the current kubectl context via mpdev
 	kubectl create namespace nlsql-test --dry-run=client -o yaml | kubectl apply -f -
 	mpdev install \
-	  --deployer=$(DEPLOYER) \
+	  --deployer=$(DEPLOYER):$(VERSION) \
 	  --parameters='{"name": "nlsql-1", "namespace": "nlsql-test"}'
 
 .PHONY: verify
 verify: check-vars ## Run the full Marketplace verification (install, test, uninstall)
-	mpdev verify --deployer=$(DEPLOYER)
+	mpdev verify --deployer=$(DEPLOYER):$(VERSION)
 
 .PHONY: clean
 clean: ## Remove a local test install
@@ -104,4 +175,4 @@ clean: ## Remove a local test install
 	-kubectl delete namespace nlsql-test
 
 .PHONY: all
-all: lint no-secrets promote-image deployer-image verify ## Full release pipeline
+all: lint no-secrets schema-lint schema-check promote-image deployer-image verify ## Full release pipeline

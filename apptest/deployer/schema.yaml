@@ -6,7 +6,8 @@ x-google-marketplace:
     releaseNote: >-
       Integration test for NLSQL.
   images:
-    '':
+    # Named to match the main schema - see the comment there.
+    nlsql:
       properties:
         image.repo:
           type: REPO_WITH_REGISTRY

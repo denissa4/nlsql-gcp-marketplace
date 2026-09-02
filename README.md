@@ -241,9 +241,9 @@ Cloud Marketplace recommends deploying by digest rather than by tag, so that a
 redeploy can never pick up a different image:
 
 ```shell
-export IMAGE_REPO="gcr.io/MARKETPLACE_PROJECT_ID/nlsql"
+export IMAGE_REPO="us-docker.pkg.dev/nlsql-public/nlsql/nlsql"
 
-export IMAGE_DIGEST=$(gcloud container images describe "${IMAGE_REPO}:${TAG}" \
+export IMAGE_DIGEST=$(gcloud artifacts docker images describe "${IMAGE_REPO}:${TAG}" \
   --format='value(image_summary.digest)')
 
 echo "Deploying ${IMAGE_REPO}@${IMAGE_DIGEST}"
@@ -384,7 +384,7 @@ if you set `credentials.existingSecret` instead — the recommended path above.
 |---|---|---|
 | `nlsql.ApiEndPoint` | `https://api.nlsql.com/googlesheet` | NLSQL API endpoint for your channel |
 | `replicaCount` | `1` | Number of NLSQL pods |
-| `image.repo` | `gcr.io/MARKETPLACE_PROJECT_ID/nlsql` | Image repository including registry |
+| `image.repo` | `us-docker.pkg.dev/nlsql-public/nlsql/nlsql` | Image repository including registry |
 | `image.tag` | `1.2.0` | Image tag; ignored when `image.digest` is set |
 | `image.digest` | `""` | Immutable `sha256:...` digest — preferred |
 | `image.pullPolicy` | `IfNotPresent` | |
@@ -616,7 +616,7 @@ Resolve the digest of the new tag:
 ```shell
 export NEW_TAG=1.3.0
 
-export NEW_DIGEST=$(gcloud container images describe "${IMAGE_REPO}:${NEW_TAG}" \
+export NEW_DIGEST=$(gcloud artifacts docker images describe "${IMAGE_REPO}:${NEW_TAG}" \
   --format='value(image_summary.digest)')
 ```
 
@@ -725,7 +725,7 @@ gcloud container clusters delete "$CLUSTER" --zone "$ZONE"
 | `/health` returns non-200 | Bad database credentials | Confirm the Secret keys are exactly `ApiToken`, `DbPassword`, `AppPassword` |
 | Ingress has no address after 20 min | Certificate not yet provisioned | `kubectl describe managedcertificate nlsql-cert -n $NAMESPACE` |
 | Links in NLSQL responses point at the wrong host | `nlsql.StaticEndPoint` not updated | Re-run `helm upgrade` with the correct URL |
-| `ImagePullBackOff` | Digest or repo wrong | `gcloud container images describe "${IMAGE_REPO}:${TAG}"` |
+| `ImagePullBackOff` | Digest or repo wrong | `gcloud artifacts docker images describe "${IMAGE_REPO}:${TAG}"` |
 
 Collect logs for a support request:
 
@@ -739,7 +739,7 @@ kubectl logs --namespace "$NAMESPACE" \
 
 ## Support
 
-- Product and deployment support: **support@nlsql.com**
+- Product and deployment support: **info@nlsql.com**
 - Website: [www.nlsql.com](https://www.nlsql.com)
 - Cloud Marketplace listing: [LISTING_URL](LISTING_URL)
 
@@ -766,18 +766,68 @@ constitutes acceptance of those terms.
 ├── Makefile                   build, verify and release targets for the publisher
 ├── schema.yaml                Cloud Marketplace UI form and parameter contract
 ├── chart/nlsql/               the Helm chart that is deployed
+├── scripts/validate-schema.py offline Marketplace schema validator
 ├── deployer/Dockerfile        Cloud Marketplace deployer image
 └── apptest/deployer/          integration test run by `mpdev verify`
 ```
 
 ### Building and verifying the package (publisher only)
 
-```shell
-export MARKETPLACE_PROJECT_ID=<project> SERVICE_NAME=<service> TAG=1.2.0
+Images for this listing live in Artifact Registry at
+`us-docker.pkg.dev/nlsql-public/nlsql` — the app at `…/nlsql` and the deployer at
+`…/deployer`, the folder name Cloud Marketplace requires.
 
+Google's build tooling is no longer anonymously pullable, so authenticate first:
+
+```shell
+gcloud auth login
+gcloud auth configure-docker gcr.io,us-docker.pkg.dev
+```
+
+Then:
+
+```shell
+export SERVICE_NAME=<service name from Producer Portal > Overview>
+
+make schema-lint     # validate schema.yaml offline — no Docker needed
 make lint            # helm lint both charts
 make no-secrets      # fail if a credential is committed
-make promote-image   # copy and annotate the app image
-make deployer-image  # build and push the deployer
+make schema-check    # prove Producer Portal can extract /data/schema.yaml
+make promote-image   # annotate the app image, push both tags
+make deployer-image  # build and annotate the deployer, push both tags
+make check-tags      # confirm what is published matches the portal
 make verify          # mpdev install -> test -> uninstall
 ```
+
+#### Versions and tags
+
+Every image must carry **two** tags. Google's requirement:
+
+> All of your app's images must be tagged with the release track and the current
+> version. For example, if you're releasing version `2.0.5` on the `2.0` release
+> track, all the images must be tagged with `2.0` and `2.0.5`.
+
+`TRACK` is derived from `VERSION`, so the two cannot drift. This release is
+**1.2.0 on track 1.2**; cut a new one with:
+
+```shell
+make promote-image deployer-image VERSION=1.3.0    # TRACK becomes 1.3
+```
+
+`schema.yaml`'s `publishedVersion` must equal the chart's `appVersion` —
+`make schema-lint` fails if they diverge.
+
+Every image must also carry the annotation
+`com.googleapis.cloudmarketplace.product.service.name=services/$SERVICE_NAME`.
+`promote-image` and `deployer-image` both apply it; the deployer is **not** exempt.
+
+#### If Producer Portal cannot extract the schema
+
+`make schema-check` reproduces what the portal does — it builds the deployer, then
+reads `/data/schema.yaml` back out of the image and parses it. Common causes when
+the portal still fails:
+
+- the deployer was never pushed at the tag the portal points at (`make check-tags`);
+- `publishedVersion` disagrees with the release tag;
+- a property in `schema.yaml` names a chart value that does not exist, so the
+  substitution lands nowhere (`make schema-lint` catches this).

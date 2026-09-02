@@ -1,7 +1,7 @@
 # Populated by the Marketplace verification harness from apptest/deployer/schema.yaml.
 image:
   repo: us-docker.pkg.dev/nlsql-public/nlsql/nlsql
-  tag: "1.2.0"
+  tag: "1.3.0"
 
 # Name of the NLSQL release under test. The harness passes the same `name` it used
 # for the install, so the tester can address the Service the main chart created.

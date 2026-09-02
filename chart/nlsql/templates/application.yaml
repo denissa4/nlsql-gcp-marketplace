@@ -14,9 +14,8 @@ metadata:
     {{- include "nlsql.labels" . | nindent 4 }}
   annotations:
     kubernetes-engine.cloud.google.com/icon: "https://www.nlsql.com/favicon.ico"
-    # TODO(nlsql): replace with the partner and product IDs shown in Producer Portal.
     marketplace.cloud.google.com/deploy-info: >-
-      {"partner_id": "PARTNER_ID", "product_id": "nlsql", "partner_name": "NLSQL"}
+      {"partner_id": "nlsql", "product_id": "nlsql", "partner_name": "NLSQL"}
 spec:
   descriptor:
     type: NLSQL
@@ -33,9 +32,8 @@ spec:
         url: https://www.nlsql.com
       - description: Deployment documentation
         url: https://github.com/denissa4/nlsql-gcp-marketplace/blob/main/README.md
-      # TODO(nlsql): replace with the published Cloud Marketplace listing URL.
       - description: Cloud Marketplace listing
-        url: LISTING_URL
+        url: https://console.cloud.google.com/marketplace/product/nlsql/nlsql-kubernetes
     notes: |-
       # Getting started
 

@@ -1,7 +1,7 @@
 x-google-marketplace:
   schemaVersion: v2
   applicationApiVersion: v1beta1
-  publishedVersion: "1.2.0"
+  publishedVersion: "1.3.0"
   publishedVersionMetadata:
     releaseNote: >-
       Integration test for NLSQL.

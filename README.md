@@ -1,10 +1,10 @@
 # NLSQL on Google Kubernetes Engine
 
-[![Marketplace](https://img.shields.io/badge/Google%20Cloud-Marketplace-4285F4)](LISTING_URL)
+[![Marketplace](https://img.shields.io/badge/Google%20Cloud-Marketplace-4285F4)](https://console.cloud.google.com/marketplace/product/nlsql/nlsql-kubernetes)
 
 This repository contains everything needed to deploy **NLSQL** to a Google Kubernetes
 Engine (GKE) cluster from the command line. It is the source package behind the
-[NLSQL listing on Google Cloud Marketplace](LISTING_URL).
+[NLSQL listing on Google Cloud Marketplace](https://console.cloud.google.com/marketplace/product/nlsql/nlsql-kubernetes).
 
 ---
 
@@ -69,7 +69,7 @@ render the app's page.
 
 Deploy from the Google Cloud console in a few clicks:
 
-[Open NLSQL on Google Cloud Marketplace](LISTING_URL)
+[Open NLSQL on Google Cloud Marketplace](https://console.cloud.google.com/marketplace/product/nlsql/nlsql-kubernetes)
 
 The console form collects the same settings documented under
 [Configuration options](#configuration-options).
@@ -163,7 +163,7 @@ kubectl get crd applications.app.k8s.io
 
 NLSQL is a commercial listing, so usage is reported to Cloud Marketplace through a
 reporting Secret. Create the NLSQL instance once from the
-[Marketplace listing](LISTING_URL) to have Google generate it, then copy its name:
+[Marketplace listing](https://console.cloud.google.com/marketplace/product/nlsql/nlsql-kubernetes) to have Google generate it, then copy its name:
 
 ```shell
 kubectl get secrets --namespace "$NAMESPACE" \
@@ -182,7 +182,7 @@ Set the identity of this install:
 ```shell
 export APP_INSTANCE_NAME=nlsql-1
 export NAMESPACE=nlsql
-export TAG=1.2.0
+export TAG=1.3.0
 ```
 
 Set the connection details for your database and NLSQL account:
@@ -385,7 +385,7 @@ if you set `credentials.existingSecret` instead — the recommended path above.
 | `nlsql.ApiEndPoint` | `https://api.nlsql.com/googlesheet` | NLSQL API endpoint for your channel |
 | `replicaCount` | `1` | Number of NLSQL pods |
 | `image.repo` | `us-docker.pkg.dev/nlsql-public/nlsql/nlsql` | Image repository including registry |
-| `image.tag` | `1.2.0` | Image tag; ignored when `image.digest` is set |
+| `image.tag` | `1.3.0` | Image tag; ignored when `image.digest` is set |
 | `image.digest` | `""` | Immutable `sha256:...` digest — preferred |
 | `image.pullPolicy` | `IfNotPresent` | |
 
@@ -614,7 +614,7 @@ kubectl get application "$APP_INSTANCE_NAME" --namespace "$NAMESPACE" \
 Resolve the digest of the new tag:
 
 ```shell
-export NEW_TAG=1.3.0
+export NEW_TAG=1.4.0
 
 export NEW_DIGEST=$(gcloud artifacts docker images describe "${IMAGE_REPO}:${NEW_TAG}" \
   --format='value(image_summary.digest)')
@@ -741,7 +741,7 @@ kubectl logs --namespace "$NAMESPACE" \
 
 - Product and deployment support: **info@nlsql.com**
 - Website: [www.nlsql.com](https://www.nlsql.com)
-- Cloud Marketplace listing: [LISTING_URL](LISTING_URL)
+- Cloud Marketplace listing: [NLSQL on Google Cloud Marketplace](https://console.cloud.google.com/marketplace/product/nlsql/nlsql-kubernetes)
 
 Billing and subscription questions are handled through Google Cloud Marketplace; see
 [Cloud Marketplace billing](https://cloud.google.com/marketplace/docs/billing).
@@ -752,7 +752,7 @@ The contents of this repository — the Helm chart, deployer, and documentation 
 licensed under the [Apache License 2.0](LICENSE).
 
 The NLSQL application image is commercial software licensed separately under the terms
-presented on the [Cloud Marketplace listing](LISTING_URL). Deploying the image
+presented on the [Cloud Marketplace listing](https://console.cloud.google.com/marketplace/product/nlsql/nlsql-kubernetes). Deploying the image
 constitutes acceptance of those terms.
 
 ---
@@ -808,10 +808,10 @@ Every image must carry **two** tags. Google's requirement:
 > track, all the images must be tagged with `2.0` and `2.0.5`.
 
 `TRACK` is derived from `VERSION`, so the two cannot drift. This release is
-**1.2.0 on track 1.2**; cut a new one with:
+**1.3.0 on track 1.3**; cut a new one with:
 
 ```shell
-make promote-image deployer-image VERSION=1.3.0    # TRACK becomes 1.3
+make promote-image deployer-image VERSION=1.4.0    # TRACK becomes 1.4
 ```
 
 `schema.yaml`'s `publishedVersion` must equal the chart's `appVersion` —

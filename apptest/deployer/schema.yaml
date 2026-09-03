@@ -1,33 +1,10 @@
-x-google-marketplace:
-  schemaVersion: v2
-  applicationApiVersion: v1beta1
-  publishedVersion: "1.3.0"
-  publishedVersionMetadata:
-    releaseNote: >-
-      Integration test for NLSQL.
-  images:
-    # Named to match the main schema - see the comment there.
-    nlsql:
-      properties:
-        image.repo:
-          type: REPO_WITH_REGISTRY
-        image.tag:
-          type: TAG
-
+# Test-only schema overlay.
+#
+# `mpdev verify` merges this into /data/schema.yaml (see overlay_test_schema.py
+# in the deployer image) before deploying in test mode. It adds properties the
+# integration test needs; everything else comes from the main schema.
 properties:
-  name:
-    type: string
-    x-google-marketplace:
-      type: NAME
-  namespace:
-    type: string
-    x-google-marketplace:
-      type: NAMESPACE
-  targetRelease:
-    type: string
-    title: Name of the NLSQL release under test
-    default: ""
-
-required:
-  - name
-  - namespace
+  tester.timeoutSeconds:
+    type: integer
+    title: Seconds the tester waits for NLSQL to answer on /health
+    default: 600

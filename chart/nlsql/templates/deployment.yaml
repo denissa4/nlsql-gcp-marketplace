@@ -52,6 +52,10 @@ spec:
                 name: {{ include "nlsql.fullname" . }}-config
             - secretRef:
                 name: {{ include "nlsql.secretName" . }}
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- with .Values.livenessProbe }}
           livenessProbe:
             {{- toYaml . | nindent 12 }}

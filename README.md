@@ -777,7 +777,9 @@ Images for this listing live in Artifact Registry at
 `us-docker.pkg.dev/nlsql-public/nlsql` — the app at `…/nlsql` and the deployer at
 `…/deployer`, the folder name Cloud Marketplace requires.
 
-Google's build tooling is no longer anonymously pullable, so authenticate first:
+Google's build tooling is no longer anonymously pullable, so authenticate first.
+You also need [crane](https://github.com/google/go-containerregistry/tree/main/cmd/crane)
+(`brew install crane`) to write the required image annotation.
 
 ```shell
 gcloud auth login
@@ -789,14 +791,16 @@ Then:
 ```shell
 export SERVICE_NAME=<service name from Producer Portal > Overview>
 
-make schema-lint     # validate schema.yaml offline — no Docker needed
-make lint            # helm lint both charts
-make no-secrets      # fail if a credential is committed
-make schema-check    # prove Producer Portal can extract /data/schema.yaml
-make promote-image   # annotate the app image, push both tags
-make deployer-image  # build and annotate the deployer, push both tags
-make check-tags      # confirm what is published matches the portal
-make verify          # mpdev install -> test -> uninstall
+make schema-lint         # validate schema.yaml offline — no Docker needed
+make lint                # helm lint the chart
+make no-secrets          # fail if a credential is committed
+make schema-check        # prove Producer Portal can extract /data/schema.yaml
+make promote-image       # push the app image on both tags
+make deployer-image      # build and push the deployer on both tags
+make annotate            # write the Marketplace annotation into both manifests
+make check-annotations   # fail unless every tag carries it, with the right service
+make check-tags          # confirm what is published matches the portal
+make verify              # mpdev install -> test -> uninstall
 ```
 
 #### Versions and tags
@@ -817,9 +821,19 @@ make promote-image deployer-image VERSION=1.4.0    # TRACK becomes 1.4
 `schema.yaml`'s `publishedVersion` must equal the chart's `appVersion` —
 `make schema-lint` fails if they diverge.
 
-Every image must also carry the annotation
-`com.googleapis.cloudmarketplace.product.service.name=services/$SERVICE_NAME`.
-`promote-image` and `deployer-image` both apply it; the deployer is **not** exempt.
+#### The image annotation
+
+Every image must carry
+`com.googleapis.cloudmarketplace.product.service.name=services/$SERVICE_NAME`, the
+deployer included. It must be in the image **manifest** — a Dockerfile `LABEL`
+only reaches the image *config*, which Marketplace does not read, and the portal
+rejects the release with *"Missing annotation … in manifest of image"*. `make
+annotate` writes it with `crane mutate`; `make check-annotations` fails if any
+published tag lacks it or carries a different service name.
+
+Because `crane mutate` rewrites the manifest, **the digest changes**. The track
+tag is re-pointed automatically, but you must re-select the release in Producer
+Portal afterwards so it picks up the new digest.
 
 #### If Producer Portal cannot extract the schema
 

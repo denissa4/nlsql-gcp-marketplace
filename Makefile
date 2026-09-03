@@ -10,6 +10,12 @@
 
 SERVICE_NAME ?= SERVICE_NAME
 
+# Marketplace reads this from the image MANIFEST, not the image config. A
+# Dockerfile LABEL only reaches the config, which is why `annotate` below uses
+# crane. Required on every image since 2025-01-20. See
+# https://docs.cloud.google.com/marketplace/docs/partners/migrations/container-image-annotations
+ANNOTATION = com.googleapis.cloudmarketplace.product.service.name=services/$(SERVICE_NAME)
+
 # Google requires every image to carry BOTH tags:
 #   "All of your app's images must be tagged with the release track and the current
 #    version. For example, if you're releasing version 2.0.5 on the 2.0 release
@@ -131,7 +137,7 @@ schema-check: check-docker-auth ## Prove Producer Portal can extract the schema 
 	     (x['schemaVersion'], x['publishedVersion'], len(d['properties']), list(x['images'])))"
 
 .PHONY: promote-image
-promote-image: check-vars ## Annotate the app image and push both tags
+promote-image: check-vars ## Promote the app image and push both tags (run `annotate` after)
 	docker pull $(SOURCE_IMAGE)
 	printf 'FROM $(SOURCE_IMAGE)\nLABEL com.googleapis.cloudmarketplace.product.service.name="services/$(SERVICE_NAME)"\n' \
 	  | docker build --platform linux/amd64 --tag $(APP_IMAGE):$(VERSION) --tag $(APP_IMAGE):$(TRACK) -
@@ -139,13 +145,41 @@ promote-image: check-vars ## Annotate the app image and push both tags
 	docker push $(APP_IMAGE):$(TRACK)
 
 .PHONY: deployer-image
-deployer-image: check-vars ## Build the deployer, annotate it, push both tags
-	@# The annotation is required on EVERY image, the deployer included.
+deployer-image: check-vars ## Build the deployer and push both tags (run `annotate` after)
+	@# The LABEL below is not sufficient on its own - it lands in the image config,
+	@# while Marketplace reads the manifest. `make annotate` does the real work.
 	docker build --platform linux/amd64 --file deployer/Dockerfile \
 	  --label com.googleapis.cloudmarketplace.product.service.name="services/$(SERVICE_NAME)" \
 	  --tag $(DEPLOYER):$(VERSION) --tag $(DEPLOYER):$(TRACK) .
 	docker push $(DEPLOYER):$(VERSION)
 	docker push $(DEPLOYER):$(TRACK)
+
+.PHONY: annotate
+annotate: check-vars ## Write the Marketplace annotation into both images' manifests
+	@# crane rewrites the manifest in place without re-uploading layers. This
+	@# changes the digest, so the track tag is re-pointed at the new one and the
+	@# release must be re-selected in Producer Portal afterwards.
+	crane mutate $(APP_IMAGE):$(VERSION) --annotation "$(ANNOTATION)" -t $(APP_IMAGE):$(VERSION)
+	crane tag $(APP_IMAGE):$(VERSION) $(TRACK)
+	crane mutate $(DEPLOYER):$(VERSION) --annotation "$(ANNOTATION)" -t $(DEPLOYER):$(VERSION)
+	crane tag $(DEPLOYER):$(VERSION) $(TRACK)
+
+.PHONY: check-annotations
+check-annotations: ## Fail unless every published tag carries the annotation in its manifest
+	@set -e; for img in $(APP_IMAGE) $(DEPLOYER); do \
+	  for tag in $(VERSION) $(TRACK); do \
+	    if crane manifest $$img:$$tag 2>/dev/null \
+	         | tr -d ' ' | grep -q '"com.googleapis.cloudmarketplace.product.service.name":"services/$(SERVICE_NAME)"'; then \
+	      echo "  ok       $$img:$$tag"; \
+	    else \
+	      echo "  BAD      $$img:$$tag  (annotation absent, tag missing, or a DIFFERENT service name)"; \
+	      crane manifest $$img:$$tag 2>/dev/null | tr -d ' ' \
+	        | grep -o '"com.googleapis.cloudmarketplace.product.service.name":"[^"]*"' \
+	        | sed 's/^/           found: /' || true; \
+	      exit 1; \
+	    fi; \
+	  done; \
+	done
 
 .PHONY: check-tags
 check-tags: ## List what is actually published, to confirm against Producer Portal

@@ -142,7 +142,10 @@ promote-image: check-vars ## Promote the app image and push both tags (run `anno
 	printf 'FROM $(SOURCE_IMAGE)\nLABEL com.googleapis.cloudmarketplace.product.service.name="services/$(SERVICE_NAME)"\n' \
 	  | docker build --platform linux/amd64 --tag $(APP_IMAGE):$(VERSION) --tag $(APP_IMAGE):$(TRACK) -
 	docker push $(APP_IMAGE):$(VERSION)
-	docker push $(APP_IMAGE):$(TRACK)
+	@# Annotate immediately: a pushed tag must never be left without it, or the
+	@# portal can pin a digest that fails verification.
+	crane mutate $(APP_IMAGE):$(VERSION) --annotation "$(ANNOTATION)" -t $(APP_IMAGE):$(VERSION)
+	crane tag $(APP_IMAGE):$(VERSION) $(TRACK)
 
 .PHONY: deployer-image
 deployer-image: check-vars ## Build the deployer and push both tags (run `annotate` after)
@@ -152,7 +155,8 @@ deployer-image: check-vars ## Build the deployer and push both tags (run `annota
 	  --label com.googleapis.cloudmarketplace.product.service.name="services/$(SERVICE_NAME)" \
 	  --tag $(DEPLOYER):$(VERSION) --tag $(DEPLOYER):$(TRACK) .
 	docker push $(DEPLOYER):$(VERSION)
-	docker push $(DEPLOYER):$(TRACK)
+	crane mutate $(DEPLOYER):$(VERSION) --annotation "$(ANNOTATION)" -t $(DEPLOYER):$(VERSION)
+	crane tag $(DEPLOYER):$(VERSION) $(TRACK)
 
 .PHONY: annotate
 annotate: check-vars ## Write the Marketplace annotation into both images' manifests

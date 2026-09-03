@@ -182,7 +182,7 @@ Set the identity of this install:
 ```shell
 export APP_INSTANCE_NAME=nlsql-1
 export NAMESPACE=nlsql
-export TAG=1.3.2
+export TAG=1.4.0
 ```
 
 Set the connection details for your database and NLSQL account:
@@ -385,7 +385,7 @@ if you set `credentials.existingSecret` instead — the recommended path above.
 | `nlsql.ApiEndPoint` | `https://api.nlsql.com/googlesheet` | NLSQL API endpoint for your channel |
 | `replicaCount` | `1` | Number of NLSQL pods |
 | `image.repo` | `us-docker.pkg.dev/nlsql-public/nlsql/nlsql` | Image repository including registry |
-| `image.tag` | `1.3.2` | Image tag; ignored when `image.digest` is set |
+| `image.tag` | `1.4.0` | Image tag; ignored when `image.digest` is set |
 | `image.digest` | `""` | Immutable `sha256:...` digest — preferred |
 | `image.pullPolicy` | `IfNotPresent` | |
 
@@ -812,7 +812,7 @@ Every image must carry **two** tags. Google's requirement:
 > track, all the images must be tagged with `2.0` and `2.0.5`.
 
 `TRACK` is derived from `VERSION`, so the two cannot drift. This release is
-**1.3.2 on track 1.3**; cut a new one with:
+**1.4.0 on track 1.3**; cut a new one with:
 
 ```shell
 make promote-image deployer-image VERSION=1.4.0    # TRACK becomes 1.4

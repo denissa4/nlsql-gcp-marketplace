@@ -6,7 +6,7 @@
 #   export SERVICE_NAME=<your Marketplace service name, from Producer Portal Overview>
 #
 # VERSION/TRACK default to the current release; override to cut a new one:
-#   make deployer-image VERSION=1.3.2 TRACK=1.3
+#   make deployer-image VERSION=1.4.0 TRACK=1.3
 
 SERVICE_NAME ?= SERVICE_NAME
 
@@ -21,7 +21,7 @@ ANNOTATION = com.googleapis.cloudmarketplace.product.service.name=services/$(SER
 #    version. For example, if you're releasing version 2.0.5 on the 2.0 release
 #    track, all the images must be tagged with 2.0 and 2.0.5."
 # https://docs.cloud.google.com/marketplace/docs/partners/kubernetes/create-app-package
-VERSION ?= 1.3.2
+VERSION ?= 1.4.0
 # Release track = the MAJOR.MINOR prefix of VERSION, derived so the two cannot drift.
 TRACK   := $(basename $(VERSION))
 
@@ -29,7 +29,8 @@ TRACK   := $(basename $(VERSION))
 # repository: project `nlsql-public`, repository `nlsql`. It is the "app folder"
 # in Marketplace terms, fixed by Producer Portal showing the deployer at
 # $(REGISTRY)/deployer.
-REGISTRY  := us-docker.pkg.dev/nlsql-public/nlsql
+AR_PROJECT := nlsql-public
+REGISTRY  := us-docker.pkg.dev/$(AR_PROJECT)/nlsql
 
 # The app is a CHILD image of that repository, not the repository root: Artifact
 # Registry serves no image at a repository root, only child images.
@@ -152,10 +153,10 @@ promote-image: check-vars ## Promote the app image and push both tags (run `anno
 deployer-image: check-vars ## Build the deployer and push both tags (run `annotate` after)
 	@# The LABEL below is not sufficient on its own - it lands in the image config,
 	@# while Marketplace reads the manifest. `make annotate` does the real work.
-	docker build --platform linux/amd64 --file deployer/Dockerfile \
-	  --label com.googleapis.cloudmarketplace.product.service.name="services/$(SERVICE_NAME)" \
-	  --tag $(DEPLOYER):$(VERSION) --tag $(DEPLOYER):$(TRACK) .
-	docker push $(DEPLOYER):$(VERSION)
+	@# Built on Cloud Build: the image compiles helm and Kubernetes from source
+	@# with a patched Go toolchain, which is impractical to emulate locally.
+	gcloud builds submit --project=$(AR_PROJECT) --config=cloudbuild.yaml \
+	  --substitutions=_IMAGE=$(DEPLOYER):$(VERSION) .
 	crane mutate $(DEPLOYER):$(VERSION) --annotation "$(ANNOTATION)" -t $(DEPLOYER):$(VERSION)
 	crane tag $(DEPLOYER):$(VERSION) $(TRACK)
 

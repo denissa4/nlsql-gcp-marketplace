@@ -12,7 +12,42 @@
 # $TAG in the environment, so any other $VARIABLE in schema.yaml would be
 # replaced with an empty string. (Regex anchors like `$'` are not variable
 # references and survive untouched.)
+# ---------------------------------------------------------------------------
+# Google's deployer base ships helm and kubectl built with go1.26.5, which
+# carries CVE-2026-39821 (and several other Go stdlib CVEs). Cloud Marketplace
+# scans OUR image, so we are responsible for them, but there is no newer base:
+# `latest` and `public-image-13.0.10` are the same digest. Upstream release
+# binaries do not help either - helm v4.2.4 and kubectl v1.36.4 are themselves
+# built with go1.26.5.
+#
+# So rebuild both from their exact upstream tags with a patched toolchain. Same
+# source, same versions, newer stdlib. Keep kubectl on 1.36.x: the wrapper at
+# /usr/bin/kubectl picks a client by server version and kubectl only supports a
+# one-minor skew, so jumping to 1.37 would break against the 1.35 clusters
+# Marketplace verifies on.
+FROM golang:1.26.8 AS gobuild
+ARG HELM_VERSION=v4.2.4
+ARG KUBECTL_VERSION=v1.36.4
+
+RUN CGO_ENABLED=0 go install \
+      -ldflags "-X helm.sh/helm/v4/internal/version.version=${HELM_VERSION}" \
+      helm.sh/helm/v4/cmd/helm@${HELM_VERSION}
+
+RUN git clone --depth 1 --branch ${KUBECTL_VERSION} \
+      https://github.com/kubernetes/kubernetes /src \
+ && cd /src \
+ && CGO_ENABLED=0 go build -o /go/bin/kubectl \
+      -ldflags "-X k8s.io/component-base/version.gitVersion=${KUBECTL_VERSION} \
+                -X k8s.io/client-go/pkg/version.gitVersion=${KUBECTL_VERSION}" \
+      ./cmd/kubectl
+
+# ---------------------------------------------------------------------------
 FROM gcr.io/cloud-marketplace-tools/k8s/deployer_helm/onbuild
+
+# Replace the vulnerable Go binaries. /usr/bin/kubectl is a bash wrapper and is
+# left alone; /opt/kubectl/default is a symlink to v1.36.
+COPY --from=gobuild /go/bin/helm    /usr/local/bin/helm
+COPY --from=gobuild /go/bin/kubectl /opt/kubectl/v1.36/kubectl
 
 # The base does NOT package the integration test. `mpdev verify` overlays the
 # test chart ONTO the main chart, matching them up by tarball basename (see

@@ -6,7 +6,7 @@
 #   export SERVICE_NAME=<your Marketplace service name, from Producer Portal Overview>
 #
 # VERSION/TRACK default to the current release; override to cut a new one:
-#   make deployer-image VERSION=1.3.1 TRACK=1.3
+#   make deployer-image VERSION=1.3.2 TRACK=1.3
 
 SERVICE_NAME ?= SERVICE_NAME
 
@@ -21,7 +21,7 @@ ANNOTATION = com.googleapis.cloudmarketplace.product.service.name=services/$(SER
 #    version. For example, if you're releasing version 2.0.5 on the 2.0 release
 #    track, all the images must be tagged with 2.0 and 2.0.5."
 # https://docs.cloud.google.com/marketplace/docs/partners/kubernetes/create-app-package
-VERSION ?= 1.3.1
+VERSION ?= 1.3.2
 # Release track = the MAJOR.MINOR prefix of VERSION, derived so the two cannot drift.
 TRACK   := $(basename $(VERSION))
 
@@ -103,7 +103,8 @@ PYTHON := $(shell for p in python3 /usr/local/bin/python3 /opt/homebrew/bin/pyth
 .PHONY: schema-lint
 schema-lint: ## Validate schema.yaml against Marketplace v2 rules (offline, no Docker)
 	@test -n "$(PYTHON)" || (echo "ERROR: no python3 with PyYAML found. Run: pip3 install pyyaml" && exit 1)
-	@$(PYTHON) scripts/validate-schema.py schema.yaml chart/nlsql/values.yaml chart/nlsql/Chart.yaml
+	@$(PYTHON) scripts/validate-schema.py schema.yaml chart/nlsql/values.yaml chart/nlsql/Chart.yaml \
+	  --overlay apptest/deployer/schema.yaml
 	@# apptest/deployer/schema.yaml is an OVERLAY merged into the main schema at
 	@# verify time, not a standalone schema, so it is only checked for valid YAML.
 	@$(PYTHON) -c "import yaml,sys; d=yaml.safe_load(open('apptest/deployer/schema.yaml')); \

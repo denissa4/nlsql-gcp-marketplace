@@ -166,15 +166,73 @@ def validate(schema_path, values_path, chart_path):
           f"{len(images or {})} image(s)")
 
 
+# x-google-marketplace types the verification harness fills in by itself.
+AUTO_FILLED = {
+    "NAME", "NAMESPACE", "REPORTING_SECRET", "GENERATED_PASSWORD",
+    "APPLICATION_UID", "ISTIO_ENABLED", "INGRESS_AVAILABLE", "DEPLOYER_IMAGE",
+}
+
+
+def validate_merged(schema_path, overlay_path):
+    """Check the schema Marketplace verification actually deploys.
+
+    Verification runs unattended: it merges the test overlay over the main schema
+    (overlay_test_schema.py) and then rejects the deploy if any required property
+    has no value. So every required property must carry a default or be one of
+    the types the harness fills in. Getting this wrong fails only in Google's
+    verification, never locally, so it is worth checking here.
+    """
+    main = load(schema_path)
+    overlay = load(overlay_path) if overlay_path else {}
+
+    def xtype(doc, prop):
+        spec = (doc.get("properties") or {}).get(prop) or {}
+        return (spec.get("x-google-marketplace") or {}).get("type")
+
+    merged = dict(main)
+    merged["properties"] = dict(main.get("properties") or {})
+    for prop in (overlay.get("properties") or {}):
+        # overlay_test_schema.py refuses to change a property's type
+        if xtype(overlay, prop) != xtype(main, prop):
+            err(f"overlay changes x-google-marketplace type of {prop!r}: "
+                f"{xtype(overlay, prop)!r} vs {xtype(main, prop)!r} — "
+                "the deployer rejects this")
+        merged["properties"][prop] = overlay["properties"][prop]
+
+    unsatisfied = []
+    for prop in merged.get("required") or []:
+        spec = merged["properties"].get(prop) or {}
+        if "default" not in spec and xtype(merged, prop) not in AUTO_FILLED:
+            unsatisfied.append(prop)
+    for prop in unsatisfied:
+        err(f"required property {prop!r} has no default and is not auto-filled — "
+            "Marketplace verification will fail with MissingRequiredProperty. "
+            "Give it a test default in the apptest overlay.")
+
+    print(f"  merged: {len(merged['properties'])} properties, "
+          f"{len(merged.get('required') or [])} required, "
+          f"{len(unsatisfied)} unsatisfied")
+
+
 def main():
     if len(sys.argv) < 2:
-        sys.exit("usage: validate-schema.py <schema.yaml> [values.yaml] [Chart.yaml]")
-    schema_path = sys.argv[1]
-    values_path = sys.argv[2] if len(sys.argv) > 2 else None
-    chart_path = sys.argv[3] if len(sys.argv) > 3 else None
+        sys.exit("usage: validate-schema.py <schema.yaml> [values.yaml] [Chart.yaml] [--overlay <path>]")
+    argv = sys.argv[1:]
+    overlay_path = None
+    if "--overlay" in argv:
+        i = argv.index("--overlay")
+        overlay_path = argv[i + 1]
+        argv = argv[:i] + argv[i + 2:]
+
+    schema_path = argv[0]
+    values_path = argv[1] if len(argv) > 1 else None
+    chart_path = argv[2] if len(argv) > 2 else None
 
     print(f"validating {schema_path}")
     validate(schema_path, values_path, chart_path)
+    if overlay_path:
+        print(f"  + overlay {overlay_path} (as Marketplace verification merges it)")
+        validate_merged(schema_path, overlay_path)
 
     for w in warnings:
         print(f"  WARN  {w}")

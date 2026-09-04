@@ -1,5 +1,0 @@
-# Test-only values, merged into the main chart's values.yaml during
-# `mpdev verify`. This file is never part of a customer install.
-tester:
-  # How long the tester waits for NLSQL to answer on /health before failing.
-  timeoutSeconds: 600

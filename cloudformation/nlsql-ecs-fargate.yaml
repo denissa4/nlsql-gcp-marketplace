@@ -1,0 +1,255 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  NLSQL on Amazon ECS (Fargate). Deployment template for the AWS Marketplace
+  container product. Creates a Fargate service behind an Application Load
+  Balancer, in subnets you already have.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: {default: Network}
+        Parameters: [VpcId, SubnetIds, LoadBalancerScheme]
+      - Label: {default: NLSQL image}
+        Parameters: [ImageUri]
+      - Label: {default: Database}
+        Parameters: [DatabaseType, DataSource, DbName, DbPort, DbSchema, DbUser]
+      - Label: {default: Credentials (AWS Secrets Manager)}
+        Parameters: [CredentialsSecretArn]
+      - Label: {default: Sizing}
+        Parameters: [TaskCpu, TaskMemory, DesiredCount]
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to deploy into.
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Two or more subnets. They must be able to reach your database and the internet (NAT or public) to call the AWS Marketplace Metering Service.
+  LoadBalancerScheme:
+    Type: String
+    Default: internet-facing
+    AllowedValues: [internet-facing, internal]
+
+  ImageUri:
+    Type: String
+    Description: >-
+      The NLSQL image from AWS Marketplace, e.g.
+      709825985650.dkr.ecr.us-east-1.amazonaws.com/SELLER/nlsql:VERSION
+    # TODO(nlsql): set Default to the published Marketplace image URI once known.
+
+  DatabaseType:
+    Type: String
+    Default: MSSQL
+    AllowedValues: [MSSQL, MySQL, PostgreSQL, Oracle, Snowflake]
+  DataSource:
+    Type: String
+    Description: Database host, reachable from the subnets above.
+  DbName:
+    Type: String
+  DbPort:
+    Type: String
+    Default: '1433'
+    Description: MSSQL 1433, MySQL 3306, PostgreSQL 5432, Oracle 1521.
+  DbSchema:
+    Type: String
+    Default: ''
+    Description: Leave empty for the engine default.
+  DbUser:
+    Type: String
+    Description: A read-only user is recommended - NLSQL only issues SELECT statements.
+
+  CredentialsSecretArn:
+    Type: String
+    Description: >-
+      ARN of an AWS Secrets Manager secret holding the sensitive values as JSON
+      keys: ApiToken, DbPassword and (only if you use the Microsoft Teams
+      channel) AppPassword. Secrets are injected by ECS at task start and never
+      appear in the task definition.
+
+  TaskCpu:
+    Type: String
+    Default: '1024'
+    AllowedValues: ['512', '1024', '2048', '4096']
+  TaskMemory:
+    Type: String
+    Default: '2048'
+  DesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 1
+
+Resources:
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${AWS::StackName}
+      RetentionInDays: 14
+
+  # Pulls the image and writes logs.
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: read-credentials-secret
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue]
+                Resource: !Ref CredentialsSecretArn
+
+  # The running container's own role. RegisterUsage is what verifies the AWS
+  # Marketplace subscription at start-up; without it the container refuses to run.
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: marketplace-metering
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - aws-marketplace:RegisterUsage
+                Resource: '*'
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${AWS::StackName} load balancer
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  ServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${AWS::StackName} tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: !Ref LoadBalancerScheme
+      Subnets: !Ref SubnetIds
+      SecurityGroups: [!Ref LoadBalancerSecurityGroup]
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      Port: 80
+      Protocol: HTTP
+      TargetType: ip
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher: {HttpCode: '200-399'}
+      TargetGroupAttributes:
+        # NLSQL keeps conversation state in the task, so a follow-up request must
+        # reach the same one.
+        - {Key: stickiness.enabled, Value: 'true'}
+        - {Key: stickiness.type, Value: lb_cookie}
+        - {Key: stickiness.lb_cookie.duration_seconds, Value: '3600'}
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref AWS::StackName
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: nlsql
+          Image: !Ref ImageUri
+          Essential: true
+          PortMappings:
+            - {ContainerPort: 80, Protocol: tcp}
+          Environment:
+            - {Name: ApiEndPoint,   Value: 'https://api.nlsql.com/googlesheet'}
+            - {Name: StaticEndPoint, Value: !Sub 'http://${LoadBalancer.DNSName}/'}
+            - {Name: DatabaseType,  Value: !Ref DatabaseType}
+            - {Name: DataSource,    Value: !Ref DataSource}
+            - {Name: DbName,        Value: !Ref DbName}
+            - {Name: DbPort,        Value: !Ref DbPort}
+            - {Name: DbSchema,      Value: !Ref DbSchema}
+            - {Name: DbUser,        Value: !Ref DbUser}
+            - {Name: ssl,           Value: 'True'}
+            - {Name: PYTHONUNBUFFERED, Value: '1'}
+          Secrets:
+            - {Name: ApiToken,    ValueFrom: !Sub '${CredentialsSecretArn}:ApiToken::'}
+            - {Name: DbPassword,  ValueFrom: !Sub '${CredentialsSecretArn}:DbPassword::'}
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: nlsql
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref AWS::StackName
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: Listener
+    Properties:
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      TaskDefinition: !Ref TaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Ref SubnetIds
+          SecurityGroups: [!Ref ServiceSecurityGroup]
+          AssignPublicIp: ENABLED
+      LoadBalancers:
+        - ContainerName: nlsql
+          ContainerPort: 80
+          TargetGroupArn: !Ref TargetGroup
+
+Outputs:
+  ApplicationUrl:
+    Description: URL NLSQL is reachable on. Use this as StaticEndPoint if you put a custom domain in front.
+    Value: !Sub 'http://${LoadBalancer.DNSName}/'
+  HealthCheck:
+    Value: !Sub 'http://${LoadBalancer.DNSName}/health'
+  LogGroupName:
+    Value: !Ref LogGroup

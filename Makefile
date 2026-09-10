@@ -5,8 +5,9 @@
 # Set this before any target that touches the registry:
 #   export SERVICE_NAME=<your Marketplace service name, from Producer Portal Overview>
 #
-# VERSION/TRACK default to the current release; override to cut a new one:
-#   make deployer-image VERSION=1.4.0 TRACK=1.3
+# VERSION defaults to the current release and TRACK is derived from it, so the
+# two cannot drift. Override VERSION alone to cut a new release:
+#   make deployer-image VERSION=1.5.0
 
 SERVICE_NAME ?= SERVICE_NAME
 

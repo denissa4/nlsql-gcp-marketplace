@@ -2,7 +2,7 @@ x-google-marketplace:
   schemaVersion: v2
   applicationApiVersion: v1beta1
 
-  # Must match chart/nlsql/Chart.yaml `appVersion`. Release 1.4.0 sits on the 1.3
+  # Must match chart/nlsql/Chart.yaml `appVersion`. Release 1.4.0 sits on the 1.4
   # release track, and every image is tagged with both - see README.md.
   publishedVersion: "1.4.0"
   publishedVersionMetadata:

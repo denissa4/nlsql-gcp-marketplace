@@ -811,11 +811,11 @@ Every image must carry **two** tags. Google's requirement:
 > version. For example, if you're releasing version `2.0.5` on the `2.0` release
 > track, all the images must be tagged with `2.0` and `2.0.5`.
 
-`TRACK` is derived from `VERSION`, so the two cannot drift. This release is
-**1.4.0 on track 1.3**; cut a new one with:
+`TRACK` is the `MAJOR.MINOR` prefix of `VERSION`, derived in the Makefile so the
+two cannot drift. This release is **1.4.0 on track 1.4**; cut a new one with:
 
 ```shell
-make promote-image deployer-image VERSION=1.4.0    # TRACK becomes 1.4
+make promote-image deployer-image VERSION=1.5.0    # TRACK becomes 1.5
 ```
 
 `schema.yaml`'s `publishedVersion` must equal the chart's `appVersion` —

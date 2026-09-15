@@ -241,38 +241,42 @@ scan: ## Fail if any published image has a fixable CRITICAL/HIGH vulnerability
 	@# their notice ("update the affected packages"), and it is the only kind we
 	@# can act on: an unfixed CVE has no version to move to.
 	@#
-	@# Artifact Registry scans asynchronously after a push, so a digest promoted
-	@# seconds ago has no results yet. Absent data is reported as such rather than
-	@# being mistaken for a clean bill of health.
+	@# `discovery_summary` is what says whether a scan happened; a clean image
+	@# has NO package_vulnerability_summary at all, so that field's absence must
+	@# never be read as "not scanned yet" - it usually means the opposite.
 	@set -e; rc=0; for img in $(ALL_IMAGES); do \
 	  echo "--- $$img:$(VERSION) ---"; \
 	  gcloud artifacts docker images describe $$img:$(VERSION) \
-	    --show-package-vulnerability --format=json 2>/dev/null \
+	    --show-all-metadata --format=json 2>/dev/null \
 	  | $(PYTHON) -c "import json,sys; \
 	      raw=sys.stdin.read().strip(); \
 	      d=json.loads(raw) if raw else {}; \
-	      v=d.get('package_vulnerability_summary'); \
-	      sys.exit(9) if v is None else None; \
+	      disc=[o.get('discovery',{}) for o in (d.get('discovery_summary') or {}).get('discovery',[])]; \
+	      st=[x.get('analysisStatus') for x in disc]; \
+	      sys.exit(9) if not st else None; \
+	      sys.exit(8) if not any(x=='FINISHED_SUCCESS' for x in st) else None; \
+	      v=(d.get('package_vulnerability_summary') or {}).get('vulnerabilities') or {}; \
 	      rows={(s,o.get('noteName','').split('/')[-1],p.get('affectedPackage'), \
 	             (p.get('affectedVersion') or {}).get('fullName'), \
 	             (p.get('fixedVersion') or {}).get('fullName')) \
-	            for s,items in (v.get('vulnerabilities') or {}).items() \
-	            for o in items if (o.get('vulnerability') or {}).get('fixAvailable') \
+	            for s,items in v.items() for o in items \
+	            if (o.get('vulnerability') or {}).get('fixAvailable') \
 	            for p in (o.get('vulnerability') or {}).get('packageIssue',[])}; \
 	      [print('  %-8s %-18s %-26s %s -> %s' % r) for r in sorted(rows)]; \
 	      bad=[r for r in rows if r[0] in ('CRITICAL','HIGH')]; \
 	      print('  %d fixable (%d critical/high)' % (len(rows), len(bad))); \
 	      sys.exit(1 if bad else 0)" \
 	  || case $$? in \
-	       9) echo "  NO SCAN DATA YET - Artifact Analysis has not scanned this digest"; \
+	       9) echo "  NOT SCANNED - no discovery record. Tag not pushed, or Artifact"; \
+	          echo "               Analysis has not picked the digest up yet."; rc=1; nodata=1;; \
+	       8) echo "  SCAN DID NOT SUCCEED - see the discovery occurrence for this digest"; \
 	          rc=1; nodata=1;; \
 	       *) rc=1; found=1;; \
 	     esac; \
 	done; \
 	test $$rc -eq 0 || { echo ""; \
 	  test -z "$$found"  || echo "FAIL: fixable CRITICAL/HIGH findings remain - Marketplace will reject this"; \
-	  test -z "$$nodata" || echo "FAIL: no scan results for some images. Either the tag is not pushed yet, or"; \
-	  test -z "$$nodata" || echo "      Artifact Analysis is still working - it runs a few minutes behind a push."; \
+	  test -z "$$nodata" || echo "FAIL: some images have no usable scan result - see above"; \
 	  exit 1; }
 	@echo "no fixable critical/high vulnerabilities in any published image"
 

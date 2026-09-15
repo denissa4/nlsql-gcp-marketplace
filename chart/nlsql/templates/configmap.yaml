@@ -25,6 +25,14 @@ data:
   MicrosoftAppTenantId: {{ .Values.teams.MicrosoftAppTenantId | quote }}
   MicrosoftAppType: {{ .Values.teams.MicrosoftAppType | quote }}
 
+  {{- /* Cloud Marketplace usage reporting. Present only for a commercial install:
+  NLSQL treats an unset UbbAgentEndpoint as "reporting disabled", which is what
+  keeps the same image inert on Azure, on AWS and under BYOL. */}}
+  {{- if .Values.reportingSecret }}
+  UbbAgentEndpoint: {{ printf "http://127.0.0.1:%v" .Values.metering.localPort | quote }}
+  UsageMetric: {{ .Values.metering.metric | quote }}
+  {{- end }}
+
   {{- /* Legacy Azure App Service variables: inert on GKE, kept for parity. */}}
   {{- range $key, $value := .Values.legacyEnv }}
   {{ $key }}: {{ $value | quote }}

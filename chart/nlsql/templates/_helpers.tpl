@@ -72,3 +72,15 @@ Cloud Marketplace requires documented CLI installs to pin by digest.
 {{- printf "%s:%s" .Values.image.repo (.Values.image.tag | toString) }}
 {{- end }}
 {{- end }}
+
+{{/*
+Fully qualified image reference for the Cloud Marketplace metering agent, on the
+same digest-over-tag rule as the app image.
+*/}}
+{{- define "nlsql.ubbagentImage" -}}
+{{- if .Values.ubbagent.image.digest }}
+{{- printf "%s@%s" .Values.ubbagent.image.repo .Values.ubbagent.image.digest }}
+{{- else }}
+{{- printf "%s:%s" .Values.ubbagent.image.repo (.Values.ubbagent.image.tag | toString) }}
+{{- end }}
+{{- end }}

@@ -173,6 +173,15 @@ kubectl get secrets --namespace "$NAMESPACE" \
 Pass that name as `reportingSecret` in the install below. If you are deploying under a
 bring-your-own-license agreement, leave `reportingSecret` empty.
 
+Setting it does two things: it runs Google's metering agent
+([ubbagent](https://github.com/GoogleCloudPlatform/ubbagent)) as a sidecar next to
+NLSQL, and it points NLSQL at that sidecar. NLSQL then reports one unit of the
+`requests` metric for every API request it makes, and the agent aggregates those
+over a minute and forwards them to Google Service Control, retrying on failure and
+keeping unsent reports on disk across restarts. The reporting Secret is mounted
+only into the agent, never into the NLSQL container. With `reportingSecret` empty,
+neither the sidecar nor its configuration is created and nothing is reported.
+
 #### Install the Application
 
 ##### Configure the installation with environment variables
@@ -182,7 +191,7 @@ Set the identity of this install:
 ```shell
 export APP_INSTANCE_NAME=nlsql-1
 export NAMESPACE=nlsql
-export TAG=1.4.0
+export TAG=1.5.0
 ```
 
 Set the connection details for your database and NLSQL account:
@@ -385,7 +394,7 @@ if you set `credentials.existingSecret` instead — the recommended path above.
 | `nlsql.ApiEndPoint` | `https://api.nlsql.com/googlesheet` | NLSQL API endpoint for your channel |
 | `replicaCount` | `1` | Number of NLSQL pods |
 | `image.repo` | `us-docker.pkg.dev/nlsql-public/nlsql/nlsql` | Image repository including registry |
-| `image.tag` | `1.4.0` | Image tag; ignored when `image.digest` is set |
+| `image.tag` | `1.5.0` | Image tag; ignored when `image.digest` is set |
 | `image.digest` | `""` | Immutable `sha256:...` digest — preferred |
 | `image.pullPolicy` | `IfNotPresent` | |
 
@@ -435,7 +444,31 @@ if you set `credentials.existingSecret` instead — the recommended path above.
 
 | Helm value | Default | Description |
 |---|---|---|
-| `reportingSecret` | `""` | Usage reporting Secret name; empty for BYOL |
+| `reportingSecret` | `""` | Usage reporting Secret name; empty for BYOL. Setting it enables the metering sidecar |
+| `metering.metric` | `requests` | Producer Portal Metric ID to report under |
+| `metering.serviceName` | `nlsql-kubernetes.endpoints.nlsql-public.cloud.goog` | Service Control service name for this listing |
+| `metering.bufferSeconds` | `60` | How long the agent aggregates before sending |
+| `metering.localPort` | `4567` | Loopback port the agent listens on |
+| `metering.diskEndpoint` | `true` | Also write each report to the Pod filesystem |
+| `ubbagent.image.repo` | `us-docker.pkg.dev/nlsql-public/nlsql/ubbagent` | Metering agent image |
+| `ubbagent.image.tag` | `1.5.0` | Metering agent tag; ignored when `ubbagent.image.digest` is set |
+
+Usage reporting is only as good as the agent behind it, so check it rather than
+assuming. The agent logs each report it accepts and each one it sends:
+
+```shell
+kubectl logs --namespace "$NAMESPACE" \
+  "deploy/${APP_INSTANCE_NAME}-nlsql" --container ubbagent
+```
+
+and reports its own health, where `currentFailureCount` counts failures since the
+last success:
+
+```shell
+kubectl exec --namespace "$NAMESPACE" \
+  "deploy/${APP_INSTANCE_NAME}-nlsql" --container ubbagent \
+  -- wget -qO- http://localhost:4567/status
+```
 
 ### Legacy variables
 
@@ -614,7 +647,7 @@ kubectl get application "$APP_INSTANCE_NAME" --namespace "$NAMESPACE" \
 Resolve the digest of the new tag:
 
 ```shell
-export NEW_TAG=1.4.0
+export NEW_TAG=1.5.0
 
 export NEW_DIGEST=$(gcloud artifacts docker images describe "${IMAGE_REPO}:${NEW_TAG}" \
   --format='value(image_summary.digest)')
@@ -774,8 +807,11 @@ constitutes acceptance of those terms.
 ### Building and verifying the package (publisher only)
 
 Images for this listing live in Artifact Registry at
-`us-docker.pkg.dev/nlsql-public/nlsql` — the app at `…/nlsql` and the deployer at
-`…/deployer`, the folder name Cloud Marketplace requires.
+`us-docker.pkg.dev/nlsql-public/nlsql` — the app at `…/nlsql`, the deployer at
+`…/deployer` (the folder name Cloud Marketplace requires), and the metering agent
+at `…/ubbagent`. The agent is Google's own image, republished here unchanged:
+Marketplace resolves every image in a listing against the listing's own registry,
+so it cannot be pulled from `gcr.io/cloud-marketplace-tools` at deploy time.
 
 Google's build tooling is no longer anonymously pullable, so authenticate first.
 You also need [crane](https://github.com/google/go-containerregistry/tree/main/cmd/crane)
@@ -796,8 +832,9 @@ make lint                # helm lint the chart
 make no-secrets          # fail if a credential is committed
 make schema-check        # prove Producer Portal can extract /data/schema.yaml
 make promote-image       # push the app image on both tags
+make promote-ubbagent    # republish the metering agent on both tags
 make deployer-image      # build and push the deployer on both tags
-make annotate            # write the Marketplace annotation into both manifests
+make annotate            # write the Marketplace annotation into every manifest
 make check-annotations   # fail unless every tag carries it, with the right service
 make check-tags          # confirm what is published matches the portal
 make verify              # mpdev install -> test -> uninstall
@@ -812,10 +849,10 @@ Every image must carry **two** tags. Google's requirement:
 > track, all the images must be tagged with `2.0` and `2.0.5`.
 
 `TRACK` is the `MAJOR.MINOR` prefix of `VERSION`, derived in the Makefile so the
-two cannot drift. This release is **1.4.0 on track 1.4**; cut a new one with:
+two cannot drift. This release is **1.5.0 on track 1.5**; cut a new one with:
 
 ```shell
-make promote-image deployer-image VERSION=1.5.0    # TRACK becomes 1.5
+make promote-image promote-ubbagent deployer-image VERSION=1.6.0   # TRACK becomes 1.6
 ```
 
 `schema.yaml`'s `publishedVersion` must equal the chart's `appVersion` —

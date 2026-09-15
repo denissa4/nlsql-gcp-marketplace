@@ -13,7 +13,7 @@ image:
   repo: us-docker.pkg.dev/nlsql-public/nlsql/nlsql
   # -- Image tag. Cloud Marketplace substitutes the release tag (schema.yaml type TAG).
   # For CLI installs, prefer pinning by digest instead - see `image.digest`.
-  tag: "1.4.0"
+  tag: "1.5.0"
   # -- Optional immutable digest, e.g. "sha256:abc123...". When set it takes precedence
   # over `image.tag`. Cloud Marketplace requires documented installs to pin by digest.
   digest: ""
@@ -205,4 +205,47 @@ legacyEnv:
 
 # -- Marketplace reporting Secret name, created by the Marketplace deployer for
 # commercial (usage-based) listings. Leave empty for BYOL / manual installs.
+#
+# When set, the chart runs the Marketplace metering agent (ubbagent) as a sidecar
+# and points NLSQL at it, so usage is reported to Google Service Control. When
+# empty, neither the sidecar nor its configuration is rendered at all.
 reportingSecret: ""
+
+# -- Usage reporting, active only when `reportingSecret` is set.
+metering:
+  # -- Metric ID from Producer Portal > Pricing. Reporting unit is `count`, so
+  # NLSQL reports int64Value 1 per API request. Must match the portal verbatim -
+  # Service Control rejects a metric it does not know.
+  metric: "requests"
+  # -- Service Control service name for this listing, from Producer Portal >
+  # Overview. Must be the same value the published images carry in their
+  # com.googleapis.cloudmarketplace.product.service.name annotation - Service
+  # Control rejects reports sent to a service the reporting key is not for.
+  serviceName: "nlsql-kubernetes.endpoints.nlsql-public.cloud.goog"
+  # -- How long the agent aggregates app-reported usage before sending it on.
+  # Google's reference configuration uses 60.
+  bufferSeconds: 60
+  # -- Loopback port the agent listens on. Only reachable from containers in this
+  # Pod; the agent's REST interface is unauthenticated by design.
+  localPort: 4567
+  # -- Also write every aggregated report to the Pod filesystem. Useful for
+  # debugging and for evidencing reported usage to Google; not required in
+  # production.
+  diskEndpoint: true
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+# -- The Cloud Marketplace metering agent (ubbagent), republished into this
+# listing's registry. Marketplace requires every deployed image to live under the
+# listing's own repository and to carry both the version and release-track tags.
+# Upstream source: gcr.io/cloud-marketplace-tools/metering/ubbagent
+ubbagent:
+  image:
+    repo: us-docker.pkg.dev/nlsql-public/nlsql/ubbagent
+    tag: "1.5.0"
+    digest: ""
+    pullPolicy: IfNotPresent

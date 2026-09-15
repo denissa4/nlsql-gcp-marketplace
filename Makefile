@@ -22,7 +22,7 @@ ANNOTATION = com.googleapis.cloudmarketplace.product.service.name=services/$(SER
 #    version. For example, if you're releasing version 2.0.5 on the 2.0 release
 #    track, all the images must be tagged with 2.0 and 2.0.5."
 # https://docs.cloud.google.com/marketplace/docs/partners/kubernetes/create-app-package
-VERSION ?= 1.4.0
+VERSION ?= 1.5.0
 # Release track = the MAJOR.MINOR prefix of VERSION, derived so the two cannot drift.
 TRACK   := $(basename $(VERSION))
 
@@ -37,6 +37,18 @@ REGISTRY  := us-docker.pkg.dev/$(AR_PROJECT)/nlsql
 # Registry serves no image at a repository root, only child images.
 APP_IMAGE := $(REGISTRY)/nlsql
 DEPLOYER  := $(REGISTRY)/deployer
+
+# The Cloud Marketplace metering agent (ubbagent), which the chart runs as a
+# sidecar for usage reporting. Marketplace resolves every image in the listing
+# against $(REGISTRY), so the agent is republished here rather than pulled from
+# Google at deploy time - and, like every other image, needs both tags and the
+# annotation in its manifest.
+UBB_IMAGE  := $(REGISTRY)/ubbagent
+UBB_SOURCE ?= gcr.io/cloud-marketplace-tools/metering/ubbagent:latest
+
+# Every image this listing publishes. Anything added here is promoted, annotated
+# and checked by the targets below.
+ALL_IMAGES := $(APP_IMAGE) $(DEPLOYER) $(UBB_IMAGE)
 
 # The image built by the NLSQL application repository, before it is promoted into
 # the Marketplace registry with the required annotation and tags.
@@ -150,6 +162,15 @@ promote-image: check-vars ## Promote the app image and push both tags (run `anno
 	crane mutate $(APP_IMAGE):$(VERSION) --annotation "$(ANNOTATION)" -t $(APP_IMAGE):$(VERSION)
 	crane tag $(APP_IMAGE):$(VERSION) $(TRACK)
 
+.PHONY: promote-ubbagent
+promote-ubbagent: check-vars ## Republish the Marketplace metering agent into this listing's registry
+	@# crane copy moves the manifest and layers as-is, so the agent stays byte for
+	@# byte the one Google publishes - we only add our tags and annotation. It is
+	@# already linux/amd64, so there is nothing to rebuild.
+	crane copy $(UBB_SOURCE) $(UBB_IMAGE):$(VERSION)
+	crane mutate $(UBB_IMAGE):$(VERSION) --annotation "$(ANNOTATION)" -t $(UBB_IMAGE):$(VERSION)
+	crane tag $(UBB_IMAGE):$(VERSION) $(TRACK)
+
 .PHONY: deployer-image
 deployer-image: check-vars ## Build the deployer and push both tags (run `annotate` after)
 	@# The LABEL below is not sufficient on its own - it lands in the image config,
@@ -162,18 +183,18 @@ deployer-image: check-vars ## Build the deployer and push both tags (run `annota
 	crane tag $(DEPLOYER):$(VERSION) $(TRACK)
 
 .PHONY: annotate
-annotate: check-vars ## Write the Marketplace annotation into both images' manifests
+annotate: check-vars ## Write the Marketplace annotation into every image manifest
 	@# crane rewrites the manifest in place without re-uploading layers. This
 	@# changes the digest, so the track tag is re-pointed at the new one and the
 	@# release must be re-selected in Producer Portal afterwards.
-	crane mutate $(APP_IMAGE):$(VERSION) --annotation "$(ANNOTATION)" -t $(APP_IMAGE):$(VERSION)
-	crane tag $(APP_IMAGE):$(VERSION) $(TRACK)
-	crane mutate $(DEPLOYER):$(VERSION) --annotation "$(ANNOTATION)" -t $(DEPLOYER):$(VERSION)
-	crane tag $(DEPLOYER):$(VERSION) $(TRACK)
+	@set -e; for img in $(ALL_IMAGES); do \
+	  crane mutate $$img:$(VERSION) --annotation "$(ANNOTATION)" -t $$img:$(VERSION); \
+	  crane tag $$img:$(VERSION) $(TRACK); \
+	done
 
 .PHONY: check-annotations
 check-annotations: ## Fail unless every published tag carries the annotation in its manifest
-	@set -e; for img in $(APP_IMAGE) $(DEPLOYER); do \
+	@set -e; for img in $(ALL_IMAGES); do \
 	  for tag in $(VERSION) $(TRACK); do \
 	    if crane manifest $$img:$$tag 2>/dev/null \
 	         | tr -d ' ' | grep -q '"com.googleapis.cloudmarketplace.product.service.name":"services/$(SERVICE_NAME)"'; then \
@@ -190,10 +211,10 @@ check-annotations: ## Fail unless every published tag carries the annotation in 
 
 .PHONY: check-tags
 check-tags: ## List what is actually published, to confirm against Producer Portal
-	@echo "--- $(APP_IMAGE) ---"
-	@gcloud artifacts docker images list $(APP_IMAGE) --include-tags
-	@echo "--- $(DEPLOYER) ---"
-	@gcloud artifacts docker images list $(DEPLOYER) --include-tags
+	@for img in $(ALL_IMAGES); do \
+	  echo "--- $$img ---"; \
+	  gcloud artifacts docker images list $$img --include-tags; \
+	done
 
 .PHONY: digest
 digest: ## Print the immutable digest to quote in README.md
@@ -239,4 +260,4 @@ clean: ## Remove a local test install
 	-kubectl delete namespace nlsql-test
 
 .PHONY: all
-all: lint no-secrets schema-lint schema-check promote-image deployer-image verify ## Full release pipeline
+all: lint no-secrets schema-lint schema-check promote-image promote-ubbagent deployer-image verify ## Full release pipeline

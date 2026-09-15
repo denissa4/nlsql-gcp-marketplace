@@ -138,12 +138,88 @@
           "maximum": 100
         }
       }
+    },
+    "reportingSecret": {
+      "type": "string"
+    },
+    "metering": {
+      "type": "object",
+      "properties": {
+        "metric": {
+          "type": "string",
+          "minLength": 1
+        },
+        "serviceName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bufferSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "localPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "diskEndpoint": {
+          "type": "boolean"
+        },
+        "resources": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "metric",
+        "serviceName",
+        "localPort"
+      ]
+    },
+    "ubbagent": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "type": "object",
+          "properties": {
+            "repo": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^(sha256:[a-f0-9]{64})?$"
+            },
+            "pullPolicy": {
+              "type": "string",
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          },
+          "required": [
+            "repo"
+          ]
+        }
+      },
+      "required": [
+        "image"
+      ]
     }
   },
   "required": [
     "image",
     "database",
     "nlsql",
-    "credentials"
+    "credentials",
+    "metering",
+    "ubbagent"
   ]
 }

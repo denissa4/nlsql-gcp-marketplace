@@ -1,14 +1,22 @@
-# Builds the Marketplace deployer image on Cloud Build.
+# Builds this listing's Go-compiling images on Cloud Build, one per invocation,
+# selected with the _DOCKERFILE substitution:
 #
-# The deployer rebuilds helm and kubectl from source with a patched Go toolchain
-# (see deployer/Dockerfile), which is far too slow to emulate on an arm64 laptop.
-# Cloud Build runs it natively on amd64, the only architecture Marketplace
-# accepts.
+#   deployer/Dockerfile   the deployer, which rebuilds helm and kubectl from
+#                         upstream source with a patched Go toolchain
+#   ubbagent/Dockerfile   the Marketplace metering agent, rebuilt from upstream
+#                         source with the same toolchain
+#
+# Both compile Go from source, which is impractical to emulate on an arm64
+# laptop, and Marketplace only accepts amd64 - which is what Cloud Build runs
+# natively. The Dockerfile is a substitution rather than a second config file
+# because the step is identical for both and would otherwise drift.
+substitutions:
+  _DOCKERFILE: deployer/Dockerfile
 steps:
   - name: gcr.io/cloud-builders/docker
     args:
       - build
-      - --file=deployer/Dockerfile
+      - --file=${_DOCKERFILE}
       - --tag=${_IMAGE}
       - .
 images:

@@ -100,6 +100,12 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.reportingSecret }}
                   key: consumer-id
+            {{- /* Without this the start script passes --no-state and the agent
+            runs with persistence DISABLED, so a restart drops everything
+            buffered but not yet sent. The volume below was always mounted; only
+            the disk *endpoint* was using it. */}}
+            - name: AGENT_STATE_DIR
+              value: "/var/lib/ubbagent"
           {{- with .Values.metering.resources }}
           resources:
             {{- toYaml . | nindent 12 }}

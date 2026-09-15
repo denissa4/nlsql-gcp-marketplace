@@ -2,9 +2,9 @@ x-google-marketplace:
   schemaVersion: v2
   applicationApiVersion: v1beta1
 
-  # Must match chart/nlsql/Chart.yaml `appVersion`. Release 1.5.0 sits on the 1.5
+  # Must match chart/nlsql/Chart.yaml `appVersion`. Release 1.6.0 sits on the 1.6
   # release track, and every image is tagged with both - see README.md.
-  publishedVersion: "1.5.0"
+  publishedVersion: "1.6.0"
   publishedVersionMetadata:
     releaseNote: >-
       NLSQL on Google Kubernetes Engine. Connects to your existing MSSQL, MySQL,
@@ -31,9 +31,9 @@ x-google-marketplace:
 
     # The Cloud Marketplace metering agent, run as a sidecar so usage reaches
     # Service Control. Marketplace resolves every deployed image against this
-    # listing's own registry, so the agent is republished from
-    # gcr.io/cloud-marketplace-tools/metering/ubbagent into <shared-prefix>/ubbagent
-    # by `make promote-ubbagent`, rather than being pulled from Google directly.
+    # listing's own registry, so the agent is built into <shared-prefix>/ubbagent
+    # by `make ubbagent-image` from upstream source, rather than being pulled
+    # from Google directly - whose own build we would then be scanned on.
     ubbagent:
       properties:
         ubbagent.image.repo:

@@ -26,7 +26,11 @@
 # one-minor skew, so jumping to 1.37 would break against the 1.35 clusters
 # Marketplace verifies on.
 FROM golang:1.26.8 AS gobuild
-ARG HELM_VERSION=v4.2.4
+# v4.3.0 rather than v4.2.4: helm vendors oras.land/oras-go/v2, and v4.2.4 pins
+# 2.6.1 which carries CVE-2026-50163 (high). v4.3.0 pins 2.6.2. There is no way
+# to override a dependency through `go install pkg@version`, so the helm release
+# is the lever.
+ARG HELM_VERSION=v4.3.0
 ARG KUBECTL_VERSION=v1.36.4
 
 RUN CGO_ENABLED=0 go install \
@@ -43,6 +47,16 @@ RUN git clone --depth 1 --branch ${KUBECTL_VERSION} \
 
 # ---------------------------------------------------------------------------
 FROM gcr.io/cloud-marketplace-tools/k8s/deployer_helm/onbuild
+
+# Google's base is Ubuntu 22.04 and is a point-in-time snapshot, so its OS
+# packages drift out of date exactly the way the app image's did. Marketplace
+# scans the deployer too - that is why helm and kubectl are rebuilt above - and
+# an un-upgraded base carried 42 findings with fixes available (glibc, perl,
+# openssl, libssh, util-linux, python3.10, pip, curl). One upgrade clears them.
+RUN apt-get update \
+ && apt-get upgrade -y \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
 
 # Replace the vulnerable Go binaries. /usr/bin/kubectl is a bash wrapper and is
 # left alone; /opt/kubectl/default is a symlink to v1.36.

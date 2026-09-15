@@ -191,7 +191,7 @@ Set the identity of this install:
 ```shell
 export APP_INSTANCE_NAME=nlsql-1
 export NAMESPACE=nlsql
-export TAG=1.5.0
+export TAG=1.6.0
 ```
 
 Set the connection details for your database and NLSQL account:
@@ -394,7 +394,7 @@ if you set `credentials.existingSecret` instead — the recommended path above.
 | `nlsql.ApiEndPoint` | `https://api.nlsql.com/googlesheet` | NLSQL API endpoint for your channel |
 | `replicaCount` | `1` | Number of NLSQL pods |
 | `image.repo` | `us-docker.pkg.dev/nlsql-public/nlsql/nlsql` | Image repository including registry |
-| `image.tag` | `1.5.0` | Image tag; ignored when `image.digest` is set |
+| `image.tag` | `1.6.0` | Image tag; ignored when `image.digest` is set |
 | `image.digest` | `""` | Immutable `sha256:...` digest — preferred |
 | `image.pullPolicy` | `IfNotPresent` | |
 
@@ -451,7 +451,7 @@ if you set `credentials.existingSecret` instead — the recommended path above.
 | `metering.localPort` | `4567` | Loopback port the agent listens on |
 | `metering.diskEndpoint` | `true` | Also write each report to the Pod filesystem |
 | `ubbagent.image.repo` | `us-docker.pkg.dev/nlsql-public/nlsql/ubbagent` | Metering agent image |
-| `ubbagent.image.tag` | `1.5.0` | Metering agent tag; ignored when `ubbagent.image.digest` is set |
+| `ubbagent.image.tag` | `1.6.0` | Metering agent tag; ignored when `ubbagent.image.digest` is set |
 
 Usage reporting is only as good as the agent behind it, so check it rather than
 assuming. The agent logs each report it accepts and each one it sends:
@@ -647,7 +647,7 @@ kubectl get application "$APP_INSTANCE_NAME" --namespace "$NAMESPACE" \
 Resolve the digest of the new tag:
 
 ```shell
-export NEW_TAG=1.5.0
+export NEW_TAG=1.6.0
 
 export NEW_DIGEST=$(gcloud artifacts docker images describe "${IMAGE_REPO}:${NEW_TAG}" \
   --format='value(image_summary.digest)')
@@ -801,6 +801,7 @@ constitutes acceptance of those terms.
 ├── chart/nlsql/               the Helm chart that is deployed
 ├── scripts/validate-schema.py offline Marketplace schema validator
 ├── deployer/Dockerfile        Cloud Marketplace deployer image
+├── ubbagent/Dockerfile        metering agent, rebuilt from upstream source
 └── apptest/deployer/          integration test run by `mpdev verify`
 ```
 
@@ -809,9 +810,12 @@ constitutes acceptance of those terms.
 Images for this listing live in Artifact Registry at
 `us-docker.pkg.dev/nlsql-public/nlsql` — the app at `…/nlsql`, the deployer at
 `…/deployer` (the folder name Cloud Marketplace requires), and the metering agent
-at `…/ubbagent`. The agent is Google's own image, republished here unchanged:
-Marketplace resolves every image in a listing against the listing's own registry,
-so it cannot be pulled from `gcr.io/cloud-marketplace-tools` at deploy time.
+at `…/ubbagent`. Marketplace resolves every image in a listing against the
+listing's own registry, so the agent cannot be pulled from
+`gcr.io/cloud-marketplace-tools` at deploy time. It is **rebuilt from upstream
+source** (`ubbagent/Dockerfile`) rather than copied, because Marketplace scans our
+copy: Google's own build is compiled with an outdated Go toolchain on an Alpine
+predating the current openssl, and those CVEs would be reported against us.
 
 Google's build tooling is no longer anonymously pullable, so authenticate first.
 You also need [crane](https://github.com/google/go-containerregistry/tree/main/cmd/crane)
@@ -832,10 +836,11 @@ make lint                # helm lint the chart
 make no-secrets          # fail if a credential is committed
 make schema-check        # prove Producer Portal can extract /data/schema.yaml
 make promote-image       # push the app image on both tags
-make promote-ubbagent    # republish the metering agent on both tags
+make ubbagent-image      # rebuild the metering agent on both tags
 make deployer-image      # build and push the deployer on both tags
 make annotate            # write the Marketplace annotation into every manifest
 make check-annotations   # fail unless every tag carries it, with the right service
+make scan                # fail on any fixable CRITICAL/HIGH, before Google finds it
 make check-tags          # confirm what is published matches the portal
 make verify              # mpdev install -> test -> uninstall
 ```
@@ -849,10 +854,10 @@ Every image must carry **two** tags. Google's requirement:
 > track, all the images must be tagged with `2.0` and `2.0.5`.
 
 `TRACK` is the `MAJOR.MINOR` prefix of `VERSION`, derived in the Makefile so the
-two cannot drift. This release is **1.5.0 on track 1.5**; cut a new one with:
+two cannot drift. This release is **1.6.0 on track 1.6**; cut a new one with:
 
 ```shell
-make promote-image promote-ubbagent deployer-image VERSION=1.6.0   # TRACK becomes 1.6
+make promote-image ubbagent-image deployer-image VERSION=1.7.0   # TRACK becomes 1.7
 ```
 
 `schema.yaml`'s `publishedVersion` must equal the chart's `appVersion` —

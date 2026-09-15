@@ -7,7 +7,7 @@
 #
 # VERSION defaults to the current release and TRACK is derived from it, so the
 # two cannot drift. Override VERSION alone to cut a new release:
-#   make deployer-image VERSION=1.5.0
+#   make deployer-image VERSION=1.7.0
 
 SERVICE_NAME ?= SERVICE_NAME
 
@@ -22,7 +22,7 @@ ANNOTATION = com.googleapis.cloudmarketplace.product.service.name=services/$(SER
 #    version. For example, if you're releasing version 2.0.5 on the 2.0 release
 #    track, all the images must be tagged with 2.0 and 2.0.5."
 # https://docs.cloud.google.com/marketplace/docs/partners/kubernetes/create-app-package
-VERSION ?= 1.5.0
+VERSION ?= 1.6.0
 # Release track = the MAJOR.MINOR prefix of VERSION, derived so the two cannot drift.
 TRACK   := $(basename $(VERSION))
 
@@ -40,11 +40,18 @@ DEPLOYER  := $(REGISTRY)/deployer
 
 # The Cloud Marketplace metering agent (ubbagent), which the chart runs as a
 # sidecar for usage reporting. Marketplace resolves every image in the listing
-# against $(REGISTRY), so the agent is republished here rather than pulled from
+# against $(REGISTRY), so the agent is published here rather than pulled from
 # Google at deploy time - and, like every other image, needs both tags and the
 # annotation in its manifest.
+#
+# It is REBUILT from upstream source (ubbagent/Dockerfile), not copied. Google's
+# published image is built on go1.26.5 and on an Alpine predating openssl
+# 3.5.8-r0; Marketplace scans OUR copy, so those CVEs are ours to clear, and
+# there is nothing newer to copy - `latest` and `0.2.13` are the same digest.
 UBB_IMAGE  := $(REGISTRY)/ubbagent
-UBB_SOURCE ?= gcr.io/cloud-marketplace-tools/metering/ubbagent:latest
+# Google's own build of the same release tag. Never shipped; kept as the
+# reference to diff the rebuild against - see `make ubbagent-compare`.
+UBB_SOURCE ?= gcr.io/cloud-marketplace-tools/metering/ubbagent:0.2.13
 
 # Every image this listing publishes. Anything added here is promoted, annotated
 # and checked by the targets below.
@@ -162,14 +169,29 @@ promote-image: check-vars ## Promote the app image and push both tags (run `anno
 	crane mutate $(APP_IMAGE):$(VERSION) --annotation "$(ANNOTATION)" -t $(APP_IMAGE):$(VERSION)
 	crane tag $(APP_IMAGE):$(VERSION) $(TRACK)
 
-.PHONY: promote-ubbagent
-promote-ubbagent: check-vars ## Republish the Marketplace metering agent into this listing's registry
-	@# crane copy moves the manifest and layers as-is, so the agent stays byte for
-	@# byte the one Google publishes - we only add our tags and annotation. It is
-	@# already linux/amd64, so there is nothing to rebuild.
-	crane copy $(UBB_SOURCE) $(UBB_IMAGE):$(VERSION)
+.PHONY: ubbagent-image
+ubbagent-image: check-vars ## Rebuild the metering agent from upstream source and push both tags
+	@# On Cloud Build for the same reason as the deployer: it compiles ubbagent
+	@# from upstream source with a patched Go toolchain, and Marketplace only
+	@# accepts linux/amd64.
+	gcloud builds submit --project=$(AR_PROJECT) --config=cloudbuild.yaml \
+	  --substitutions=_IMAGE=$(UBB_IMAGE):$(VERSION),_DOCKERFILE=ubbagent/Dockerfile .
 	crane mutate $(UBB_IMAGE):$(VERSION) --annotation "$(ANNOTATION)" -t $(UBB_IMAGE):$(VERSION)
 	crane tag $(UBB_IMAGE):$(VERSION) $(TRACK)
+
+.PHONY: ubbagent-compare
+ubbagent-compare: ## Diff the rebuilt agent against Google's published image
+	@# Equivalence check: the flag set and entrypoint must match Google's build
+	@# exactly, and only the Go toolchain version should differ - that difference
+	@# IS the fix.
+	@set -e; for img in $(UBB_SOURCE) $(UBB_IMAGE):$(VERSION); do \
+	  echo "--- $$img ---"; \
+	  docker run --rm --platform linux/amd64 --entrypoint /usr/local/bin/ubbagent \
+	    $$img --help 2>&1 | grep -oE '^ +-[a-z_]+' | sort | tr -d ' ' | tr '\n' ' '; echo; \
+	  crane config $$img | $(PYTHON) -c \
+	    "import json,sys; c=json.load(sys.stdin)['config']; \
+	     print('  cmd=%s user=%r' % (c.get('Cmd'), c.get('User')))"; \
+	done
 
 .PHONY: deployer-image
 deployer-image: check-vars ## Build the deployer and push both tags (run `annotate` after)
@@ -178,7 +200,7 @@ deployer-image: check-vars ## Build the deployer and push both tags (run `annota
 	@# Built on Cloud Build: the image compiles helm and Kubernetes from source
 	@# with a patched Go toolchain, which is impractical to emulate locally.
 	gcloud builds submit --project=$(AR_PROJECT) --config=cloudbuild.yaml \
-	  --substitutions=_IMAGE=$(DEPLOYER):$(VERSION) .
+	  --substitutions=_IMAGE=$(DEPLOYER):$(VERSION),_DOCKERFILE=deployer/Dockerfile .
 	crane mutate $(DEPLOYER):$(VERSION) --annotation "$(ANNOTATION)" -t $(DEPLOYER):$(VERSION)
 	crane tag $(DEPLOYER):$(VERSION) $(TRACK)
 
@@ -208,6 +230,51 @@ check-annotations: ## Fail unless every published tag carries the annotation in 
 	    fi; \
 	  done; \
 	done
+
+.PHONY: scan
+scan: ## Fail if any published image has a fixable CRITICAL/HIGH vulnerability
+	@# Reads Artifact Analysis, which is already enabled on $(AR_PROJECT) and is
+	@# the same scanner Cloud Marketplace reports against - so this is the mail
+	@# from Google's security team, a week early.
+	@#
+	@# Only findings with a fix available count. That is exactly the criterion in
+	@# their notice ("update the affected packages"), and it is the only kind we
+	@# can act on: an unfixed CVE has no version to move to.
+	@#
+	@# Artifact Registry scans asynchronously after a push, so a digest promoted
+	@# seconds ago has no results yet. Absent data is reported as such rather than
+	@# being mistaken for a clean bill of health.
+	@set -e; rc=0; for img in $(ALL_IMAGES); do \
+	  echo "--- $$img:$(VERSION) ---"; \
+	  gcloud artifacts docker images describe $$img:$(VERSION) \
+	    --show-package-vulnerability --format=json 2>/dev/null \
+	  | $(PYTHON) -c "import json,sys; \
+	      raw=sys.stdin.read().strip(); \
+	      d=json.loads(raw) if raw else {}; \
+	      v=d.get('package_vulnerability_summary'); \
+	      sys.exit(9) if v is None else None; \
+	      rows={(s,o.get('noteName','').split('/')[-1],p.get('affectedPackage'), \
+	             (p.get('affectedVersion') or {}).get('fullName'), \
+	             (p.get('fixedVersion') or {}).get('fullName')) \
+	            for s,items in (v.get('vulnerabilities') or {}).items() \
+	            for o in items if (o.get('vulnerability') or {}).get('fixAvailable') \
+	            for p in (o.get('vulnerability') or {}).get('packageIssue',[])}; \
+	      [print('  %-8s %-18s %-26s %s -> %s' % r) for r in sorted(rows)]; \
+	      bad=[r for r in rows if r[0] in ('CRITICAL','HIGH')]; \
+	      print('  %d fixable (%d critical/high)' % (len(rows), len(bad))); \
+	      sys.exit(1 if bad else 0)" \
+	  || case $$? in \
+	       9) echo "  NO SCAN DATA YET - Artifact Analysis has not scanned this digest"; \
+	          rc=1; nodata=1;; \
+	       *) rc=1; found=1;; \
+	     esac; \
+	done; \
+	test $$rc -eq 0 || { echo ""; \
+	  test -z "$$found"  || echo "FAIL: fixable CRITICAL/HIGH findings remain - Marketplace will reject this"; \
+	  test -z "$$nodata" || echo "FAIL: no scan results for some images. Either the tag is not pushed yet, or"; \
+	  test -z "$$nodata" || echo "      Artifact Analysis is still working - it runs a few minutes behind a push."; \
+	  exit 1; }
+	@echo "no fixable critical/high vulnerabilities in any published image"
 
 .PHONY: check-tags
 check-tags: ## List what is actually published, to confirm against Producer Portal
@@ -260,4 +327,4 @@ clean: ## Remove a local test install
 	-kubectl delete namespace nlsql-test
 
 .PHONY: all
-all: lint no-secrets schema-lint schema-check promote-image promote-ubbagent deployer-image verify ## Full release pipeline
+all: lint no-secrets schema-lint schema-check promote-image ubbagent-image deployer-image scan verify ## Full release pipeline

@@ -7,7 +7,7 @@
 #
 # VERSION defaults to the current release and TRACK is derived from it, so the
 # two cannot drift. Override VERSION alone to cut a new release:
-#   make deployer-image VERSION=1.8.0
+#   make deployer-image VERSION=1.9.0
 
 SERVICE_NAME ?= SERVICE_NAME
 
@@ -22,7 +22,7 @@ ANNOTATION = com.googleapis.cloudmarketplace.product.service.name=services/$(SER
 #    version. For example, if you're releasing version 2.0.5 on the 2.0 release
 #    track, all the images must be tagged with 2.0 and 2.0.5."
 # https://docs.cloud.google.com/marketplace/docs/partners/kubernetes/create-app-package
-VERSION ?= 1.7.0
+VERSION ?= 1.8.0
 # Release track = the MAJOR.MINOR prefix of VERSION, derived so the two cannot drift.
 TRACK   := $(basename $(VERSION))
 

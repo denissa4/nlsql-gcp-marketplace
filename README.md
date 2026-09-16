@@ -161,17 +161,21 @@ kubectl get crd applications.app.k8s.io
 
 ##### Acquire the usage reporting Secret
 
-NLSQL is a commercial listing, so usage is reported to Cloud Marketplace through a
-reporting Secret. Create the NLSQL instance once from the
-[Marketplace listing](https://console.cloud.google.com/marketplace/product/nlsql/nlsql-kubernetes) to have Google generate it, then copy its name:
+Whether you need a reporting Secret depends on the plan you bought. Marketplace
+creates one only for a **usage-based** entitlement; a flat-rate or BYOL plan has
+nothing to meter, so no reporting service account exists and `reportingSecret` is
+simply left empty. It is optional for exactly that reason.
+
+If your plan is usage-based, create the NLSQL instance once from the
+[Marketplace listing](https://console.cloud.google.com/marketplace/product/nlsql/nlsql-kubernetes) to have Google generate the Secret, then copy its name:
 
 ```shell
 kubectl get secrets --namespace "$NAMESPACE" \
   -o custom-columns=NAME:.metadata.name | grep license
 ```
 
-Pass that name as `reportingSecret` in the install below. If you are deploying under a
-bring-your-own-license agreement, leave `reportingSecret` empty.
+Pass that name as `reportingSecret` in the install below. Leave it empty on a
+flat-rate or bring-your-own-license plan.
 
 Setting it does two things: it runs Google's metering agent
 ([ubbagent](https://github.com/GoogleCloudPlatform/ubbagent)) as a sidecar next to
@@ -191,7 +195,7 @@ Set the identity of this install:
 ```shell
 export APP_INSTANCE_NAME=nlsql-1
 export NAMESPACE=nlsql
-export TAG=1.7.0
+export TAG=1.8.0
 ```
 
 Set the connection details for your database and NLSQL account:
@@ -394,7 +398,7 @@ if you set `credentials.existingSecret` instead — the recommended path above.
 | `nlsql.ApiEndPoint` | `https://api.nlsql.com/googlesheet` | NLSQL API endpoint for your channel |
 | `replicaCount` | `1` | Number of NLSQL pods |
 | `image.repo` | `us-docker.pkg.dev/nlsql-public/nlsql/nlsql` | Image repository including registry |
-| `image.tag` | `1.7.0` | Image tag; ignored when `image.digest` is set |
+| `image.tag` | `1.8.0` | Image tag; ignored when `image.digest` is set |
 | `image.digest` | `""` | Immutable `sha256:...` digest — preferred |
 | `image.pullPolicy` | `IfNotPresent` | |
 
@@ -444,14 +448,14 @@ if you set `credentials.existingSecret` instead — the recommended path above.
 
 | Helm value | Default | Description |
 |---|---|---|
-| `reportingSecret` | `""` | Usage reporting Secret name; empty for BYOL. Setting it enables the metering sidecar |
+| `reportingSecret` | `""` | Usage reporting Secret name. Optional: empty on flat-rate/BYOL plans. Setting it enables the metering sidecar |
 | `metering.metric` | `requests` | Producer Portal Metric ID to report under |
 | `metering.serviceName` | `nlsql-kubernetes.endpoints.nlsql-public.cloud.goog` | Service Control service name for this listing |
 | `metering.bufferSeconds` | `60` | How long the agent aggregates before sending |
 | `metering.localPort` | `4567` | Loopback port the agent listens on |
 | `metering.diskEndpoint` | `true` | Also write each report to the Pod filesystem |
 | `ubbagent.image.repo` | `us-docker.pkg.dev/nlsql-public/nlsql/ubbagent` | Metering agent image |
-| `ubbagent.image.tag` | `1.7.0` | Metering agent tag; ignored when `ubbagent.image.digest` is set |
+| `ubbagent.image.tag` | `1.8.0` | Metering agent tag; ignored when `ubbagent.image.digest` is set |
 
 Usage reporting is only as good as the agent behind it, so check it rather than
 assuming. The agent logs each report it accepts and each one it sends:
@@ -647,7 +651,7 @@ kubectl get application "$APP_INSTANCE_NAME" --namespace "$NAMESPACE" \
 Resolve the digest of the new tag:
 
 ```shell
-export NEW_TAG=1.7.0
+export NEW_TAG=1.8.0
 
 export NEW_DIGEST=$(gcloud artifacts docker images describe "${IMAGE_REPO}:${NEW_TAG}" \
   --format='value(image_summary.digest)')
@@ -854,10 +858,10 @@ Every image must carry **two** tags. Google's requirement:
 > track, all the images must be tagged with `2.0` and `2.0.5`.
 
 `TRACK` is the `MAJOR.MINOR` prefix of `VERSION`, derived in the Makefile so the
-two cannot drift. This release is **1.7.0 on track 1.7**; cut a new one with:
+two cannot drift. This release is **1.8.0 on track 1.8**; cut a new one with:
 
 ```shell
-make promote-image ubbagent-image deployer-image VERSION=1.8.0   # TRACK becomes 1.8
+make promote-image ubbagent-image deployer-image VERSION=1.9.0   # TRACK becomes 1.9
 ```
 
 `schema.yaml`'s `publishedVersion` must equal the chart's `appVersion` —

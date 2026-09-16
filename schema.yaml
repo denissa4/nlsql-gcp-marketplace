@@ -2,9 +2,9 @@ x-google-marketplace:
   schemaVersion: v2
   applicationApiVersion: v1beta1
 
-  # Must match chart/nlsql/Chart.yaml `appVersion`. Release 1.7.0 sits on the 1.7
+  # Must match chart/nlsql/Chart.yaml `appVersion`. Release 1.8.0 sits on the 1.8
   # release track, and every image is tagged with both - see README.md.
-  publishedVersion: "1.7.0"
+  publishedVersion: "1.8.0"
   publishedVersionMetadata:
     releaseNote: >-
       NLSQL on Google Kubernetes Engine. Connects to your existing MSSQL, MySQL,
@@ -192,9 +192,16 @@ properties:
     maximum: 20
 
   # --- Cloud Marketplace usage reporting --------------------------------------
-  # Setting this switches on the ubbagent sidecar, which reports the `requests`
-  # metric to Service Control. The Marketplace deployer fills it in; it is not
-  # shown to the customer.
+  # Setting this switches on the ubbagent sidecar, which reports usage to Service
+  # Control. The Marketplace deployer fills it in; it is not shown to the customer.
+  #
+  # NOT in `required`, deliberately. Marketplace only mints a reporting service
+  # account for an entitlement on a usage-based plan. Under a flat-rate or BYOL
+  # plan there is nothing for it to offer, and a required REPORTING_SECRET makes
+  # the deployment form impossible to complete - the field is mandatory, the
+  # dropdown is empty, and the Deploy button stays disabled. Optional here, and
+  # the chart treats an empty value as "no metering", which is the same path a
+  # BYOL install takes.
   reportingSecret:
     type: string
     title: Usage reporting Secret
@@ -213,7 +220,6 @@ required:
   - database.DbPort
   - database.DbUser
   - credentials.DbPassword
-  - reportingSecret
 
 form:
   - widget: help

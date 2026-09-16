@@ -17,6 +17,12 @@ spec:
       annotations:
         {{- /* Roll the pods when non-secret configuration changes. */}}
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- /* And when a credential changes. Without this, rotating ApiToken,
+        DbPassword or MicrosoftAppPassword through `helm upgrade` updates the
+        Secret but never restarts the pods, so the running container keeps the
+        old value indefinitely - the change appears to have worked and has not.
+        Renders empty, and so is stable, when credentials.existingSecret is set. */}}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
         {{- if .Values.reportingSecret }}
         checksum/ubbagent: {{ include (print $.Template.BasePath "/ubbagent-configmap.yaml") . | sha256sum }}
         {{- end }}

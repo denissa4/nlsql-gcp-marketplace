@@ -2,9 +2,9 @@ x-google-marketplace:
   schemaVersion: v2
   applicationApiVersion: v1beta1
 
-  # Must match chart/nlsql/Chart.yaml `appVersion`. Release 1.6.0 sits on the 1.6
+  # Must match chart/nlsql/Chart.yaml `appVersion`. Release 1.7.0 sits on the 1.7
   # release track, and every image is tagged with both - see README.md.
-  publishedVersion: "1.6.0"
+  publishedVersion: "1.7.0"
   publishedVersionMetadata:
     releaseNote: >-
       NLSQL on Google Kubernetes Engine. Connects to your existing MSSQL, MySQL,
@@ -162,11 +162,15 @@ properties:
   teams.MicrosoftAppType:
     type: string
     title: Microsoft App type
-    default: MultiTenant
+    description: >-
+      Bot Framework application type. SingleTenant is the default because it is
+      what a bot registered against your own Entra tenant uses. UserAssignedMSI
+      is deliberately not offered: it authenticates through an Azure managed
+      identity, which does not exist on Google Kubernetes Engine.
+    default: SingleTenant
     enum:
-      - MultiTenant
       - SingleTenant
-      - UserAssignedMSI
+      - MultiTenant
 
   credentials.AppPassword:
     type: string

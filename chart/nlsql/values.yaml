@@ -13,7 +13,7 @@ image:
   repo: us-docker.pkg.dev/nlsql-public/nlsql/nlsql
   # -- Image tag. Cloud Marketplace substitutes the release tag (schema.yaml type TAG).
   # For CLI installs, prefer pinning by digest instead - see `image.digest`.
-  tag: "1.6.0"
+  tag: "1.7.0"
   # -- Optional immutable digest, e.g. "sha256:abc123...". When set it takes precedence
   # over `image.tag`. Cloud Marketplace requires documented installs to pin by digest.
   digest: ""
@@ -162,7 +162,9 @@ database:
 teams:
   MicrosoftAppId: ""
   MicrosoftAppTenantId: ""
-  MicrosoftAppType: "MultiTenant"
+  # -- SingleTenant or MultiTenant. UserAssignedMSI is not supported on GKE: it
+  # authenticates through an Azure managed identity, which has no equivalent here.
+  MicrosoftAppType: "SingleTenant"
 
 # ---------------------------------------------------------------------------
 # Credentials
@@ -247,6 +249,6 @@ metering:
 ubbagent:
   image:
     repo: us-docker.pkg.dev/nlsql-public/nlsql/ubbagent
-    tag: "1.6.0"
+    tag: "1.7.0"
     digest: ""
     pullPolicy: IfNotPresent

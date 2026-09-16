@@ -5,10 +5,10 @@ type: application
 
 # Chart version. Bump on every published Cloud Marketplace release.
 # Must be valid SemVer.
-version: 1.6.0
+version: 1.7.0
 
 # Version of the NLSQL application image this chart ships.
-appVersion: "1.6.0"
+appVersion: "1.7.0"
 
 home: https://www.nlsql.com
 sources:

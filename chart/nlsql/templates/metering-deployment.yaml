@@ -1,0 +1,115 @@
+{{- if .Values.reportingSecret }}
+{{- /*
+The Cloud Marketplace metering agent, running on its own rather than as a sidecar
+in the application Pod.
+
+This is a billing-correctness decision, not a packaging preference. The agent
+generates usage from a heartbeat, and every instance of it reports the full
+interval under the same consumerId from the reporting Secret - Service Control
+simply sums them. As a sidecar, `replicaCount: 3` would bill three times the plan
+price, and an HPA would make the monthly invoice a non-deterministic function of
+the customer's traffic. Billing must depend on the installation existing, not on
+how the customer chose to scale it.
+
+Two properties below are load-bearing:
+
+  replicas: 1   Hardcoded. Never wire this to .Values.replicaCount or the HPA.
+  Recreate      A RollingUpdate briefly runs two Pods, and two agents overlapping
+                double-bill for the overlap. Recreate leaves a short gap instead;
+                under-billing during a rollout is the right way to be wrong.
+
+Because the agent binds 127.0.0.1 only, nothing outside this Pod can reach it -
+no Service can expose it. That is why the application reports nothing under this
+model, and why it needs no code for billing to work.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nlsql.fullname" . }}-metering
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nlsql.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metering
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "nlsql.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: metering
+  template:
+    metadata:
+      annotations:
+        {{- /* Roll the agent when its configuration changes - a changed metric
+        name, unit or interval must reach the running process. */}}
+        checksum/ubbagent: {{ include (print $.Template.BasePath "/ubbagent-configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "nlsql.labels" . | nindent 8 }}
+        app.kubernetes.io/component: metering
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "nlsql.serviceAccountName" . }}
+      containers:
+        - name: ubbagent
+          image: {{ include "nlsql.ubbagentImage" . }}
+          imagePullPolicy: {{ .Values.ubbagent.image.pullPolicy }}
+          env:
+            - name: AGENT_CONFIG_FILE
+              value: "/etc/ubbagent/config.yaml"
+            {{- /* Also serves /status, the only way to observe reporting health.
+            Dropping it would make ubbagent-start pass --no-http. */}}
+            - name: AGENT_LOCAL_PORT
+              value: {{ .Values.metering.localPort | quote }}
+            - name: AGENT_ENCODED_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.reportingSecret }}
+                  key: reporting-key
+            - name: AGENT_CONSUMER_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.reportingSecret }}
+                  key: consumer-id
+            {{- /* Without this the start script passes --no-state and the agent
+            runs with persistence disabled, discarding anything queued but unsent
+            on restart. */}}
+            - name: AGENT_STATE_DIR
+              value: "/var/lib/ubbagent"
+          {{- with .Values.metering.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: ubbagent-config
+              mountPath: /etc/ubbagent
+              readOnly: true
+            - name: ubbagent-state
+              mountPath: /var/lib/ubbagent
+      volumes:
+        - name: ubbagent-config
+          configMap:
+            name: {{ include "nlsql.fullname" . }}-ubbagent
+        {{- /* Survives a container restart, not a Pod reschedule. The agent's
+        retry queue caps undelivered reports at 3 hours anyway, so a PVC would
+        bound a loss that is already bounded - and would force a storage class
+        into the deployment form. */}}
+        - name: ubbagent-state
+          emptyDir:
+            sizeLimit: 64Mi
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -161,12 +161,12 @@ kubectl get crd applications.app.k8s.io
 
 ##### Acquire the usage reporting Secret
 
-Whether you need a reporting Secret depends on the plan you bought. Marketplace
-creates one only for a **usage-based** entitlement; a flat-rate or BYOL plan has
-nothing to meter, so no reporting service account exists and `reportingSecret` is
-simply left empty. It is optional for exactly that reason.
+NLSQL is billed by usage-based pricing on a **time** metric: Google does not
+support flat monthly pricing for Kubernetes listings. The metering agent reports
+how long the installation has been running, and the charge is pro-rata, so a
+shorter month or any downtime bills less.
 
-If your plan is usage-based, create the NLSQL instance once from the
+Create the NLSQL instance once from the
 [Marketplace listing](https://console.cloud.google.com/marketplace/product/nlsql/nlsql-kubernetes) to have Google generate the Secret, then copy its name:
 
 ```shell
@@ -174,17 +174,23 @@ kubectl get secrets --namespace "$NAMESPACE" \
   -o custom-columns=NAME:.metadata.name | grep license
 ```
 
-Pass that name as `reportingSecret` in the install below. Leave it empty on a
-flat-rate or bring-your-own-license plan.
+Pass that name as `reportingSecret` in the install below.
 
-Setting it does two things: it runs Google's metering agent
-([ubbagent](https://github.com/GoogleCloudPlatform/ubbagent)) as a sidecar next to
-NLSQL, and it points NLSQL at that sidecar. NLSQL then reports one unit of the
-`requests` metric for every API request it makes, and the agent aggregates those
-over a minute and forwards them to Google Service Control, retrying on failure and
-keeping unsent reports on disk across restarts. The reporting Secret is mounted
-only into the agent, never into the NLSQL container. With `reportingSecret` empty,
-neither the sidecar nor its configuration is created and nothing is reported.
+Setting it deploys Google's metering agent
+([ubbagent](https://github.com/GoogleCloudPlatform/ubbagent)) as a **separate,
+single-replica Deployment**. The agent generates the usage itself from a heartbeat
+and forwards it to Google Service Control, retrying on failure and keeping unsent
+reports on disk across restarts. NLSQL itself reports nothing and plays no part in
+billing.
+
+The agent deliberately does **not** run as a sidecar. Each sidecar would report the
+full interval under the same consumer ID, so scaling NLSQL to three replicas would
+bill three times the plan price, and an autoscaler would make the invoice a
+function of your traffic. As its own Deployment, **the charge depends on the
+installation existing, not on how you scale it.**
+
+The reporting Secret is mounted only into the agent, never into the NLSQL
+container. With `reportingSecret` empty, no metering is deployed at all.
 
 #### Install the Application
 
@@ -195,7 +201,7 @@ Set the identity of this install:
 ```shell
 export APP_INSTANCE_NAME=nlsql-1
 export NAMESPACE=nlsql
-export TAG=1.8.0
+export TAG=1.9.0
 ```
 
 Set the connection details for your database and NLSQL account:
@@ -398,7 +404,7 @@ if you set `credentials.existingSecret` instead — the recommended path above.
 | `nlsql.ApiEndPoint` | `https://api.nlsql.com/googlesheet` | NLSQL API endpoint for your channel |
 | `replicaCount` | `1` | Number of NLSQL pods |
 | `image.repo` | `us-docker.pkg.dev/nlsql-public/nlsql/nlsql` | Image repository including registry |
-| `image.tag` | `1.8.0` | Image tag; ignored when `image.digest` is set |
+| `image.tag` | `1.9.0` | Image tag; ignored when `image.digest` is set |
 | `image.digest` | `""` | Immutable `sha256:...` digest — preferred |
 | `image.pullPolicy` | `IfNotPresent` | |
 
@@ -449,28 +455,39 @@ if you set `credentials.existingSecret` instead — the recommended path above.
 | Helm value | Default | Description |
 |---|---|---|
 | `reportingSecret` | `""` | Usage reporting Secret name. Optional: empty on flat-rate/BYOL plans. Setting it enables the metering sidecar |
-| `metering.metric` | `requests` | Producer Portal Metric ID to report under |
+| `metering.metric` | `instance_time` | Producer Portal Metric ID to report under |
 | `metering.serviceName` | `nlsql-kubernetes.endpoints.nlsql-public.cloud.goog` | Service Control service name for this listing |
-| `metering.bufferSeconds` | `60` | How long the agent aggregates before sending |
-| `metering.localPort` | `4567` | Loopback port the agent listens on |
+| `metering.unit` | `second` | Unit the metric is defined in **on the backend**. The heartbeat value is derived from this — see below |
+| `metering.intervalSeconds` | `60` | Heartbeat period, and the usage lost to each restart |
+| `metering.unitsPerInterval` | `null` | Escape hatch; overrides the derived value. Leave unset |
+| `metering.localPort` | `4567` | Loopback port the agent listens on; also serves `/status` |
 | `metering.diskEndpoint` | `true` | Also write each report to the Pod filesystem |
+
+`metering.unit` must match the reporting unit of the metric in Producer Portal. The
+chart derives the reported value from it — 60 for a second-denominated metric on a
+60s heartbeat, 1 for a minute-denominated one — because getting that wrong scales
+every invoice by exactly that ratio and nothing in the stack detects it. Check the
+rendered arithmetic before publishing a pricing change:
+
+```shell
+kubectl get cm "${APP_INSTANCE_NAME}-nlsql-ubbagent" --namespace "$NAMESPACE" \
+  -o jsonpath='{.data.config\.yaml}' | head -20
+```
 | `ubbagent.image.repo` | `us-docker.pkg.dev/nlsql-public/nlsql/ubbagent` | Metering agent image |
-| `ubbagent.image.tag` | `1.8.0` | Metering agent tag; ignored when `ubbagent.image.digest` is set |
+| `ubbagent.image.tag` | `1.9.0` | Metering agent tag; ignored when `ubbagent.image.digest` is set |
 
 Usage reporting is only as good as the agent behind it, so check it rather than
 assuming. The agent logs each report it accepts and each one it sends:
 
 ```shell
-kubectl logs --namespace "$NAMESPACE" \
-  "deploy/${APP_INSTANCE_NAME}-nlsql" --container ubbagent
+kubectl logs --namespace "$NAMESPACE" "deploy/${APP_INSTANCE_NAME}-nlsql-metering"
 ```
 
 and reports its own health, where `currentFailureCount` counts failures since the
 last success:
 
 ```shell
-kubectl exec --namespace "$NAMESPACE" \
-  "deploy/${APP_INSTANCE_NAME}-nlsql" --container ubbagent \
+kubectl exec --namespace "$NAMESPACE" "deploy/${APP_INSTANCE_NAME}-nlsql-metering" \
   -- wget -qO- http://localhost:4567/status
 ```
 
@@ -651,7 +668,7 @@ kubectl get application "$APP_INSTANCE_NAME" --namespace "$NAMESPACE" \
 Resolve the digest of the new tag:
 
 ```shell
-export NEW_TAG=1.8.0
+export NEW_TAG=1.9.0
 
 export NEW_DIGEST=$(gcloud artifacts docker images describe "${IMAGE_REPO}:${NEW_TAG}" \
   --format='value(image_summary.digest)')
@@ -858,10 +875,10 @@ Every image must carry **two** tags. Google's requirement:
 > track, all the images must be tagged with `2.0` and `2.0.5`.
 
 `TRACK` is the `MAJOR.MINOR` prefix of `VERSION`, derived in the Makefile so the
-two cannot drift. This release is **1.8.0 on track 1.8**; cut a new one with:
+two cannot drift. This release is **1.9.0 on track 1.9**; cut a new one with:
 
 ```shell
-make promote-image ubbagent-image deployer-image VERSION=1.9.0   # TRACK becomes 1.9
+make promote-image ubbagent-image deployer-image VERSION=1.10.0  # TRACK becomes 1.10
 ```
 
 `schema.yaml`'s `publishedVersion` must equal the chart's `appVersion` —

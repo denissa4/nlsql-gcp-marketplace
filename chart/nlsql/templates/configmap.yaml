@@ -25,13 +25,12 @@ data:
   MicrosoftAppTenantId: {{ .Values.teams.MicrosoftAppTenantId | quote }}
   MicrosoftAppType: {{ .Values.teams.MicrosoftAppType | quote }}
 
-  {{- /* Cloud Marketplace usage reporting. Present only for a commercial install:
-  NLSQL treats an unset UbbAgentEndpoint as "reporting disabled", which is what
-  keeps the same image inert on Azure, on AWS and under BYOL. */}}
-  {{- if .Values.reportingSecret }}
-  UbbAgentEndpoint: {{ printf "http://127.0.0.1:%v" .Values.metering.localPort | quote }}
-  UsageMetric: {{ .Values.metering.metric | quote }}
-  {{- end }}
+  {{- /* No UbbAgentEndpoint. Billing is on an agent-generated time metric, so the
+  application reports nothing: NLSQL treats an unset UbbAgentEndpoint as
+  "reporting disabled" and its report_usage() returns before touching the network.
+  Pointing it at the agent would be actively harmful - the agent lives in another
+  Pod now and binds loopback only, so every API request would pay for a failed
+  connection, and the `requests` metric is not in the plan for it to report to. */}}
 
   {{- /* Legacy Azure App Service variables: inert on GKE, kept for parity. */}}
   {{- range $key, $value := .Values.legacyEnv }}

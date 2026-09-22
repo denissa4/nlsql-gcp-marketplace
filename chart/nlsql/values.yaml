@@ -13,7 +13,7 @@ image:
   repo: us-docker.pkg.dev/nlsql-public/nlsql/nlsql
   # -- Image tag. Cloud Marketplace substitutes the release tag (schema.yaml type TAG).
   # For CLI installs, prefer pinning by digest instead - see `image.digest`.
-  tag: "1.8.0"
+  tag: "1.9.0"
   # -- Optional immutable digest, e.g. "sha256:abc123...". When set it takes precedence
   # over `image.tag`. Cloud Marketplace requires documented installs to pin by digest.
   digest: ""
@@ -216,26 +216,71 @@ legacyEnv:
 reportingSecret: ""
 
 # -- Usage reporting, active only when `reportingSecret` is set.
+#
+# The plan is usage-based on a TIME metric: Google does not support flat monthly
+# pricing for Kubernetes listings, only Free, BYOL and usage-based. The agent
+# generates the usage itself from a heartbeat, so the application reports nothing
+# and needs no code for this to bill.
+#
+# The agent runs as its own single-replica Deployment, NOT as a sidecar. Every
+# sidecar would report the full interval under the same consumerId, so N replicas
+# would bill N x the plan price and an autoscaler would make the invoice a
+# function of the customer's traffic.
 metering:
-  # -- Metric ID from Producer Portal > Pricing. Reporting unit is `count`, so
-  # NLSQL reports int64Value 1 per API request. Must match the portal verbatim -
-  # Service Control rejects a metric it does not know.
-  metric: "requests"
   # -- Service Control service name for this listing, from Producer Portal >
   # Overview. Must be the same value the published images carry in their
   # com.googleapis.cloudmarketplace.product.service.name annotation - Service
   # Control rejects reports sent to a service the reporting key is not for.
   serviceName: "nlsql-kubernetes.endpoints.nlsql-public.cloud.goog"
-  # -- How long the agent aggregates app-reported usage before sending it on.
-  # Google's reference configuration uses 60.
-  bufferSeconds: 60
-  # -- Loopback port the agent listens on. Only reachable from containers in this
-  # Pod; the agent's REST interface is unauthenticated by design.
+
+  # -- Metric ID from Producer Portal > Pricing, verbatim. The agent reports it as
+  # "<serviceName>/<metric>"; a name the pricing config does not define is
+  # rejected as permanent and dropped WITHOUT retry - silent lost revenue, not a
+  # visible failure.
+  metric: "instance_time"
+
+  # -- The unit the metric is DEFINED in on the BACKEND (Producer Portal), not
+  # here. One of: second, minute, hour, day.
+  #
+  # This is the most dangerous value in the chart. The heartbeat reports one
+  # interval of runtime expressed in this unit, and the template DERIVES that
+  # number rather than trusting anyone to type it:
+  #
+  #   unit=second, intervalSeconds=60  ->  int64Value 60   (correct)
+  #   unit=minute, intervalSeconds=60  ->  int64Value 1    (correct)
+  #
+  # Reporting 60 against a minute-denominated metric inflates every invoice 60x;
+  # reporting 1 against a second-denominated one collects 1/60th. Neither
+  # produces an error anywhere in the stack: ubbagent validates the value's TYPE,
+  # never its magnitude, and Service Control cannot know what a pod-second is.
+  #
+  # `second` is Google's recommendation for Kubernetes time metrics ("1 second,
+  # the smallest possible"). The metric type is int, so a coarser unit forces
+  # whole-unit quantisation and a pod that dies mid-unit reports nothing for it.
+  unit: "second"
+
+  # -- Heartbeat period. Google: "should not be too short to avoid excessive
+  # reporting; should not be too long to avoid missing events in case of
+  # unexpected restarts. The recommended value is 1 minute, or 60 seconds."
+  # This is the reporting cadence only - price granularity comes from `unit`.
+  # It is also the quantum of usage lost to each Pod restart (60s = $0.023).
+  intervalSeconds: 60
+
+  # -- Escape hatch: report this many units per interval instead of deriving it
+  # from `unit`. Leave null. Only needed if a unit is billed per something other
+  # than wall-clock time. Setting it silences the divisibility check and re-opens
+  # the trap above.
+  unitsPerInterval: null
+
+  # -- Loopback port the agent listens on. Nothing reports to it under time-based
+  # billing, but it also serves /status, which is the only way to observe
+  # reporting health (lastReportSuccess, currentFailureCount).
   localPort: 4567
-  # -- Also write every aggregated report to the Pod filesystem. Useful for
-  # debugging and for evidencing reported usage to Google; not required in
-  # production.
+
+  # -- Also write every report to the Pod filesystem. Useful for debugging and for
+  # evidencing reported usage to Google; not required in production.
   diskEndpoint: true
+
   resources:
     requests:
       cpu: 10m
@@ -251,6 +296,6 @@ metering:
 ubbagent:
   image:
     repo: us-docker.pkg.dev/nlsql-public/nlsql/ubbagent
-    tag: "1.8.0"
+    tag: "1.9.0"
     digest: ""
     pullPolicy: IfNotPresent

@@ -2,9 +2,9 @@ x-google-marketplace:
   schemaVersion: v2
   applicationApiVersion: v1beta1
 
-  # Must match chart/nlsql/Chart.yaml `appVersion`. Release 1.8.0 sits on the 1.8
+  # Must match chart/nlsql/Chart.yaml `appVersion`. Release 1.9.0 sits on the 1.9
   # release track, and every image is tagged with both - see README.md.
-  publishedVersion: "1.8.0"
+  publishedVersion: "1.9.0"
   publishedVersionMetadata:
     releaseNote: >-
       NLSQL on Google Kubernetes Engine. Connects to your existing MSSQL, MySQL,
@@ -44,12 +44,17 @@ x-google-marketplace:
   clusterConstraints:
     k8sVersion: ">=1.29.0"
     resources:
-      # NLSQL (500m / 256Mi) plus the metering sidecar (10m / 32Mi) - see
-      # `resources` and `metering.resources` in chart/nlsql/values.yaml.
+      # NLSQL itself. The metering agent is a separate single-replica Deployment
+      # (10m / 32Mi), counted below - see `resources` and `metering.resources` in
+      # chart/nlsql/values.yaml.
       - replicas: 1
         requests:
-          cpu: 510m
-          memory: 288Mi
+          cpu: 500m
+          memory: 256Mi
+      - replicas: 1
+        requests:
+          cpu: 10m
+          memory: 32Mi
 
 properties:
   name:
@@ -195,13 +200,14 @@ properties:
   # Setting this switches on the ubbagent sidecar, which reports usage to Service
   # Control. The Marketplace deployer fills it in; it is not shown to the customer.
   #
-  # NOT in `required`, deliberately. Marketplace only mints a reporting service
-  # account for an entitlement on a usage-based plan. Under a flat-rate or BYOL
-  # plan there is nothing for it to offer, and a required REPORTING_SECRET makes
-  # the deployment form impossible to complete - the field is mandatory, the
-  # dropdown is empty, and the Deploy button stays disabled. Optional here, and
-  # the chart treats an empty value as "no metering", which is the same path a
-  # BYOL install takes.
+  # Back in `required` as of 1.9.0. It was made optional in 1.8.0 because a
+  # flat-rate plan mints no reporting service account, so a mandatory field with
+  # an empty dropdown made the deployment form impossible to complete. The plan is
+  # usage-based again, which does mint one, so the field is fillable - and leaving
+  # it optional would let a customer deploy with metering off and never be billed.
+  #
+  # If the plan ever moves off usage-based, this must go back to optional or the
+  # deploy form locks up again.
   reportingSecret:
     type: string
     title: Usage reporting Secret
@@ -220,6 +226,7 @@ required:
   - database.DbPort
   - database.DbUser
   - credentials.DbPassword
+  - reportingSecret
 
 form:
   - widget: help

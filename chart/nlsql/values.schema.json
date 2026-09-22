@@ -145,16 +145,32 @@
     "metering": {
       "type": "object",
       "properties": {
-        "metric": {
-          "type": "string",
-          "minLength": 1
-        },
         "serviceName": {
           "type": "string",
           "minLength": 1
         },
-        "bufferSeconds": {
+        "metric": {
+          "type": "string",
+          "minLength": 1
+        },
+        "unit": {
+          "type": "string",
+          "enum": [
+            "second",
+            "minute",
+            "hour",
+            "day"
+          ]
+        },
+        "intervalSeconds": {
           "type": "integer",
+          "minimum": 1
+        },
+        "unitsPerInterval": {
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 1
         },
         "localPort": {
@@ -170,8 +186,10 @@
         }
       },
       "required": [
-        "metric",
         "serviceName",
+        "metric",
+        "unit",
+        "intervalSeconds",
         "localPort"
       ]
     },

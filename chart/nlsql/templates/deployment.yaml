@@ -23,9 +23,6 @@ spec:
         old value indefinitely - the change appears to have worked and has not.
         Renders empty, and so is stable, when credentials.existingSecret is set. */}}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
-        {{- if .Values.reportingSecret }}
-        checksum/ubbagent: {{ include (print $.Template.BasePath "/ubbagent-configmap.yaml") . | sha256sum }}
-        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -77,62 +74,6 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-        {{- if .Values.reportingSecret }}
-        {{- /*
-        Cloud Marketplace metering agent. Listens on the Pod's loopback interface,
-        where NLSQL reports one unit per API request (UbbAgentEndpoint, set in the
-        ConfigMap), and forwards aggregated usage to Service Control.
-
-        AGENT_CONFIG_FILE and AGENT_LOCAL_PORT are read by the agent itself.
-        AGENT_ENCODED_KEY and AGENT_CONSUMER_ID are ordinary names, referenced by
-        the same names in the agent's config.yaml, which the sidecar expands from
-        this environment at startup.
-        */}}
-        - name: ubbagent
-          image: {{ include "nlsql.ubbagentImage" . }}
-          imagePullPolicy: {{ .Values.ubbagent.image.pullPolicy }}
-          env:
-            - name: AGENT_CONFIG_FILE
-              value: "/etc/ubbagent/config.yaml"
-            - name: AGENT_LOCAL_PORT
-              value: {{ .Values.metering.localPort | quote }}
-            - name: AGENT_ENCODED_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.reportingSecret }}
-                  key: reporting-key
-            - name: AGENT_CONSUMER_ID
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.reportingSecret }}
-                  key: consumer-id
-            {{- /* Without this the start script passes --no-state and the agent
-            runs with persistence DISABLED, so a restart drops everything
-            buffered but not yet sent. The volume below was always mounted; only
-            the disk *endpoint* was using it. */}}
-            - name: AGENT_STATE_DIR
-              value: "/var/lib/ubbagent"
-          {{- with .Values.metering.resources }}
-          resources:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          volumeMounts:
-            - name: ubbagent-config
-              mountPath: /etc/ubbagent
-              readOnly: true
-            - name: ubbagent-state
-              mountPath: /var/lib/ubbagent
-        {{- end }}
-      {{- if .Values.reportingSecret }}
-      volumes:
-        - name: ubbagent-config
-          configMap:
-            name: {{ include "nlsql.fullname" . }}-ubbagent
-        {{- /* The agent persists unsent reports here, so they survive a restart
-        of the agent process. */}}
-        - name: ubbagent-state
-          emptyDir: {}
-      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

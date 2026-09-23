@@ -12,7 +12,7 @@ Metadata:
       - Label: {default: NLSQL image}
         Parameters: [ImageUri]
       - Label: {default: Database}
-        Parameters: [DatabaseType, DataSource, DbName, DbPort, DbSchema, DbUser]
+        Parameters: [DatabaseType, DataSource, DbName, DbPort, DbSchema, DbUser, Warehouse]
       - Label: {default: Credentials (AWS Secrets Manager)}
         Parameters: [CredentialsSecretArn]
       - Label: {default: Microsoft Teams channel}
@@ -42,7 +42,7 @@ Parameters:
   DatabaseType:
     Type: String
     Default: MSSQL
-    AllowedValues: [MSSQL, MySQL, PostgreSQL, Oracle, Snowflake]
+    AllowedValues: [MSSQL, MySQL, PostgreSQL, Snowflake]
   DataSource:
     Type: String
     Description: Database host, reachable from the subnets above.
@@ -51,11 +51,18 @@ Parameters:
   DbPort:
     Type: String
     Default: '1433'
-    Description: MSSQL 1433, MySQL 3306, PostgreSQL 5432, Oracle 1521.
+    Description: MSSQL 1433, MySQL 3306, PostgreSQL 5432. Ignored for Snowflake.
   DbSchema:
     Type: String
     Default: ''
-    Description: Leave empty for the engine default.
+    Description: Leave empty for the engine default. Required when DatabaseType is Snowflake.
+
+  Warehouse:
+    Type: String
+    Default: ''
+    Description: >-
+      Snowflake warehouse name. Required when DatabaseType is Snowflake, ignored
+      otherwise. For Snowflake, put your account identifier in DataSource.
   DbUser:
     Type: String
     Description: A read-only user is recommended - NLSQL only issues SELECT statements.
@@ -222,13 +229,18 @@ Resources:
             - {ContainerPort: 8080, Protocol: tcp}
           Environment:
             - {Name: ApiEndPoint,   Value: 'https://api.nlsql.com/googlesheet'}
-            - {Name: StaticEndPoint, Value: !Sub 'http://${LoadBalancer.DNSName}/'}
+            - {Name: StaticEndPoint, Value: !Sub 'https://${Distribution.DomainName}'}
             - {Name: DatabaseType,  Value: !Ref DatabaseType}
             - {Name: DataSource,    Value: !Ref DataSource}
             - {Name: DbName,        Value: !Ref DbName}
             - {Name: DbPort,        Value: !Ref DbPort}
             - {Name: DbSchema,      Value: !Ref DbSchema}
             - {Name: DbUser,        Value: !Ref DbUser}
+            # Snowflake only. The connector reads the account identifier from
+            # DataSource, but the pre-flight check looks for Account by name, so
+            # both have to be present or a Snowflake deployment refuses to start.
+            - {Name: Account,       Value: !Ref DataSource}
+            - {Name: Warehouse,     Value: !Ref Warehouse}
             - {Name: ssl,           Value: 'True'}
             - {Name: PYTHONUNBUFFERED, Value: '1'}
             - {Name: MicrosoftAppId,       Value: !Ref MicrosoftAppId}
@@ -247,6 +259,55 @@ Resources:
               awslogs-group: !Ref LogGroup
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: nlsql
+
+  # HTTPS at the edge using CloudFront's own certificate, mirroring the
+  # Terraform stacks. Microsoft Bot Framework will not accept a plain HTTP
+  # messaging endpoint, and the load balancer has no certificate of its own, so
+  # without this the mandatory Teams channel cannot be registered at all.
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    DependsOn: Listener
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub '${AWS::StackName} NLSQL'
+        PriceClass: PriceClass_100
+        IPV6Enabled: false
+        DefaultRootObject: index.html
+        Origins:
+          - Id: nlsql-alb
+            DomainName: !GetAtt LoadBalancer.DNSName
+            CustomOriginConfig:
+              HTTPPort: 80
+              HTTPSPort: 443
+              # CloudFront reaches the load balancer over HTTP inside AWS; the
+              # certificate the buyer's browser and Bot Framework see is
+              # CloudFront's own.
+              OriginProtocolPolicy: http-only
+              OriginSSLProtocols: [TLSv1.2]
+              OriginKeepaliveTimeout: 60
+              OriginReadTimeout: 60
+        DefaultCacheBehavior:
+          TargetOriginId: nlsql-alb
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT]
+          CachedMethods: [GET, HEAD]
+          Compress: false
+          # Nothing here is cacheable - this distribution exists only to
+          # terminate TLS. Cookies are forwarded because the target group uses
+          # lb_cookie stickiness for conversation state, and query strings
+          # because the application reads them.
+          MinTTL: 0
+          DefaultTTL: 0
+          MaxTTL: 0
+          ForwardedValues:
+            QueryString: true
+            Headers: [Host, Authorization, Content-Type, Origin, Referer]
+            Cookies:
+              Forward: all
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+          MinimumProtocolVersion: TLSv1.2_2021
 
   Cluster:
     Type: AWS::ECS::Cluster
@@ -273,9 +334,17 @@ Resources:
 
 Outputs:
   ApplicationUrl:
-    Description: URL NLSQL is reachable on. Use this as StaticEndPoint if you put a custom domain in front.
-    Value: !Sub 'http://${LoadBalancer.DNSName}/'
+    Description: >-
+      HTTPS URL NLSQL is reachable on. Register the Microsoft Teams messaging
+      endpoint as this URL with /api/messages appended.
+    Value: !Sub 'https://${Distribution.DomainName}/'
+  MessagingEndpoint:
+    Description: Set this as the messaging endpoint of your Azure Bot resource.
+    Value: !Sub 'https://${Distribution.DomainName}/api/messages'
   HealthCheck:
-    Value: !Sub 'http://${LoadBalancer.DNSName}/health'
+    Value: !Sub 'https://${Distribution.DomainName}/health'
+  LoadBalancerUrl:
+    Description: The load balancer behind CloudFront. Plain HTTP - not for Bot Framework.
+    Value: !Sub 'http://${LoadBalancer.DNSName}/'
   LogGroupName:
     Value: !Ref LogGroup

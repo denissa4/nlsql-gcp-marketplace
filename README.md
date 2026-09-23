@@ -24,6 +24,7 @@ Azure needs, and is merged into the AWS branch rather than the other way round.
 | Free trial | 30 days, covering one running task |
 | Entitlement and metering | `RegisterUsage`, called from inside the application |
 | Container port | 8080 — the container runs as an unprivileged user |
+| Public endpoint | CloudFront (HTTPS, default certificate) in front of an HTTP load balancer |
 | Registry | `709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/nlsql` |
 
 ## Layout
@@ -40,7 +41,7 @@ LICENSE                                 Apache 2.0
 Application Load Balancer in a VPC and subnets the buyer already has. It is what
 the listing's **Deployment templates** field points at.
 
-Four things in it are load-bearing:
+Five things in it are load-bearing:
 
 - **The task role grants `aws-marketplace:RegisterUsage`.** Under hourly pricing
   that call is not only an entitlement check at start-up — it is what AWS meters
@@ -51,6 +52,14 @@ Four things in it are load-bearing:
   check no-ops without it, which means AWS meters nothing and an hourly product
   earns nothing. The application validates the value against a trusted list, so
   editing it in a downloaded template does not buy unmetered use.
+- **CloudFront terminates TLS.** Microsoft Bot Framework refuses a plain HTTP
+  messaging endpoint, and the load balancer carries no certificate, so without
+  the distribution the mandatory Teams channel cannot be registered at all. It
+  mirrors the CloudFront in `infrastructure-as-code/terraform/modules/nlsql-aws`:
+  HTTP to the origin, `redirect-to-https` for viewers, all TTLs zero. It forwards
+  cookies and query strings where that module does not — this target group uses
+  `lb_cookie` stickiness for conversation state, and stripping the cookie would
+  silently defeat it once `DesiredCount` exceeds 1.
 - **The target group points at 8080, not 80.** nginx binds 8080 because the
   container runs as an unprivileged user, and Fargate cannot grant
   `NET_BIND_SERVICE` back. Only the load balancer listens on 80.
@@ -60,8 +69,16 @@ Four things in it are load-bearing:
   `ApiToken`, `DbPassword` and `AppPassword` as JSON keys — all three required,
   since the Microsoft Teams channel is not optional.
 
-`DesiredCount` defaults to 1, which is exactly what the free trial covers. A
-buyer who scales to two tasks is billed for the second one during the trial.
+`DesiredCount` defaults to 1, which is exactly what the free trial covers — one
+task for 30 days. A buyer who scales to two tasks is billed for the second from
+the start, and for every task once the trial ends.
+
+Supported engines are Microsoft SQL Server, MySQL, PostgreSQL and Snowflake.
+Oracle is deliberately absent: `get_connector()` has no Oracle branch, so
+offering it would have been a claim the application cannot honour. Snowflake
+needs `Account` and `Warehouse`, which the template supplies from `DataSource`
+and the `Warehouse` parameter — the pre-flight check in `handler.py` looks for
+both by name and refuses to start without them.
 
 Target-group stickiness is enabled because NLSQL holds conversation state in the
 task, so a follow-up request has to reach the same one.

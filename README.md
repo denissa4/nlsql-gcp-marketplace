@@ -8,8 +8,11 @@ It is deliberately independent of `main`, which packages the same application fo
 `schema.yaml`). None of that machinery has an AWS equivalent, so it is not
 carried here.
 
-The application image itself is shared: it is built from
-[`denissa4/ainlbot`](https://github.com/denissa4/ainlbot).
+The application is built from [`denissa4/ainlbot`](https://github.com/denissa4/ainlbot),
+branch **`aws-marketplace-offer`** — not `master`. That branch carries the changes AWS
+requires and Azure App Service cannot take: a non-root container, nginx on port 8080
+instead of 80, and the `RegisterUsage` entitlement call. `master` keeps building what
+Azure needs, and is merged into the AWS branch rather than the other way round.
 
 ## Listing shape
 
@@ -19,7 +22,8 @@ The application image itself is shared: it is built from
 | Delivery option | Container image (Amazon ECS / AWS Fargate) |
 | Pricing | Hourly, per Amazon ECS task — metered to the second, billed per hour |
 | Free trial | 30 days, covering one running task |
-| Entitlement and metering | `RegisterUsage` |
+| Entitlement and metering | `RegisterUsage`, called from inside the application |
+| Container port | 8080 — the container runs as an unprivileged user |
 | Registry | `709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/nlsql` |
 
 ## Layout
@@ -36,17 +40,25 @@ LICENSE                                 Apache 2.0
 Application Load Balancer in a VPC and subnets the buyer already has. It is what
 the listing's **Deployment templates** field points at.
 
-Two things in it are load-bearing:
+Four things in it are load-bearing:
 
 - **The task role grants `aws-marketplace:RegisterUsage`.** Under hourly pricing
   that call is not only an entitlement check at start-up — it is what AWS meters
   the running task on, so it is the billing path itself. The container obtains
   credentials for it from this role; AWS forbids baking credentials into the
   image.
+- **`AWS_MARKETPLACE_PRODUCT_CODE` must reach the container.** The entitlement
+  check no-ops without it, which means AWS meters nothing and an hourly product
+  earns nothing. The application validates the value against a trusted list, so
+  editing it in a downloaded template does not buy unmetered use.
+- **The target group points at 8080, not 80.** nginx binds 8080 because the
+  container runs as an unprivileged user, and Fargate cannot grant
+  `NET_BIND_SERVICE` back. Only the load balancer listens on 80.
 - **Credentials come from AWS Secrets Manager**, injected by ECS as container
   secrets, never written into the task definition. AWS rejects images and
   templates containing hardcoded secrets. The buyer creates one secret with
-  `ApiToken`, `DbPassword` and optionally `AppPassword` as JSON keys.
+  `ApiToken`, `DbPassword` and `AppPassword` as JSON keys — all three required,
+  since the Microsoft Teams channel is not optional.
 
 `DesiredCount` defaults to 1, which is exactly what the free trial covers. A
 buyer who scales to two tasks is billed for the second one during the trial.
@@ -91,14 +103,12 @@ The product code, needed as input to `RegisterUsage`, is
 
 ## Outstanding before submission
 
-- [ ] `RegisterUsage` integration in the application. Under hourly pricing this
-      is the metering path, not just an entitlement check: without it no usage is
-      recorded, buyers run free, and the trial has nothing to convert into. It
-      must be called from inside the application, not from an `ENTRYPOINT`
-      wrapper, which a buyer can override, and the AWS Region must be resolved at
-      runtime rather than hardcoded.
-- [ ] Non-root container. AWS requires it by default; the image currently runs
-      supervisord as root with nginx on port 80.
+- [x] `RegisterUsage` integration, in `api/nlsql/aws_marketplace.py` on the
+      application's `aws-marketplace-offer` branch. Called from inside the
+      application rather than an `ENTRYPOINT` wrapper a buyer could override, with
+      the Region resolved at runtime from the ECS task ARN.
+- [x] Non-root container: uid 10001, nginx on 8080, writable paths pre-chowned at
+      build time.
 - [ ] Buyer-facing usage instructions for the listing form.
 - [ ] The real hourly price. The offer currently carries the nominal test price
       AWS expects during limited-visibility testing, and it has to be raised

@@ -15,6 +15,8 @@ Metadata:
         Parameters: [DatabaseType, DataSource, DbName, DbPort, DbSchema, DbUser]
       - Label: {default: Credentials (AWS Secrets Manager)}
         Parameters: [CredentialsSecretArn]
+      - Label: {default: Microsoft Teams channel}
+        Parameters: [MicrosoftAppId, MicrosoftAppTenantId, MicrosoftAppType]
       - Label: {default: Sizing}
         Parameters: [TaskCpu, TaskMemory, DesiredCount]
 
@@ -35,7 +37,7 @@ Parameters:
     Description: >-
       The NLSQL image from AWS Marketplace. Leave the default unless you are
       pinning an older published version.
-    Default: 709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/nlsql:1.0.0
+    Default: 709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/nlsql:1.0.1
 
   DatabaseType:
     Type: String
@@ -62,9 +64,25 @@ Parameters:
     Type: String
     Description: >-
       ARN of an AWS Secrets Manager secret holding the sensitive values as JSON
-      keys: ApiToken, DbPassword and (only if you use the Microsoft Teams
-      channel) AppPassword. Secrets are injected by ECS at task start and never
-      appear in the task definition.
+      keys: ApiToken, DbPassword and AppPassword. All three are required. Secrets
+      are injected by ECS at task start and never appear in the task definition.
+
+  MicrosoftAppId:
+    Type: String
+    MinLength: 1
+    Description: Bot Framework application ID for the Microsoft Teams channel.
+  MicrosoftAppTenantId:
+    Type: String
+    MinLength: 1
+    Description: Entra tenant ID the bot is registered in.
+  MicrosoftAppType:
+    Type: String
+    Default: SingleTenant
+    AllowedValues: [SingleTenant, MultiTenant]
+    Description: >-
+      Bot Framework application type. UserAssignedMSI is not offered: it
+      authenticates through an Azure managed identity, which has no AWS
+      equivalent.
 
   TaskCpu:
     Type: String
@@ -145,8 +163,8 @@ Resources:
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
+          FromPort: 8080
+          ToPort: 8080
           SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
 
   LoadBalancer:
@@ -160,7 +178,8 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
       VpcId: !Ref VpcId
-      Port: 80
+      # The container runs as an unprivileged user, so nginx binds 8080, not 80.
+      Port: 8080
       Protocol: HTTP
       TargetType: ip
       HealthCheckPath: /health
@@ -200,7 +219,7 @@ Resources:
           Image: !Ref ImageUri
           Essential: true
           PortMappings:
-            - {ContainerPort: 80, Protocol: tcp}
+            - {ContainerPort: 8080, Protocol: tcp}
           Environment:
             - {Name: ApiEndPoint,   Value: 'https://api.nlsql.com/googlesheet'}
             - {Name: StaticEndPoint, Value: !Sub 'http://${LoadBalancer.DNSName}/'}
@@ -212,9 +231,16 @@ Resources:
             - {Name: DbUser,        Value: !Ref DbUser}
             - {Name: ssl,           Value: 'True'}
             - {Name: PYTHONUNBUFFERED, Value: '1'}
+            - {Name: MicrosoftAppId,       Value: !Ref MicrosoftAppId}
+            - {Name: MicrosoftAppTenantId, Value: !Ref MicrosoftAppTenantId}
+            - {Name: MicrosoftAppType,     Value: !Ref MicrosoftAppType}
+            # Without this the application's entitlement check no-ops and AWS
+            # meters nothing, which under hourly pricing means no revenue.
+            - {Name: AWS_MARKETPLACE_PRODUCT_CODE, Value: '80vvvie6oupr9etlhimecwmkj'}
           Secrets:
             - {Name: ApiToken,    ValueFrom: !Sub '${CredentialsSecretArn}:ApiToken::'}
             - {Name: DbPassword,  ValueFrom: !Sub '${CredentialsSecretArn}:DbPassword::'}
+            - {Name: AppPassword, ValueFrom: !Sub '${CredentialsSecretArn}:AppPassword::'}
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -242,7 +268,7 @@ Resources:
           AssignPublicIp: ENABLED
       LoadBalancers:
         - ContainerName: nlsql
-          ContainerPort: 80
+          ContainerPort: 8080
           TargetGroupArn: !Ref TargetGroup
 
 Outputs:

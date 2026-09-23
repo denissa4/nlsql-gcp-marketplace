@@ -33,9 +33,9 @@ Parameters:
   ImageUri:
     Type: String
     Description: >-
-      The NLSQL image from AWS Marketplace, e.g.
-      709825985650.dkr.ecr.us-east-1.amazonaws.com/SELLER/nlsql:VERSION
-    # TODO(nlsql): set Default to the published Marketplace image URI once known.
+      The NLSQL image from AWS Marketplace. Leave the default unless you are
+      pinning an older published version.
+    Default: 709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/nlsql:1.0.0
 
   DatabaseType:
     Type: String

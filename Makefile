@@ -5,8 +5,9 @@
 # Marketplace ECR repository.
 
 # From the AWS Marketplace Management Portal, after "Add repositories".
+# <sellerName>/<repositoryName>, both created by the portal and permanent.
 ECR_REGISTRY ?= 709825985650.dkr.ecr.us-east-1.amazonaws.com
-ECR_REPO     ?= ECR_REPO
+ECR_REPO     ?= nlsql/nlsql
 AWS_REGION   ?= us-east-1
 VERSION      ?= 1.0.0
 
@@ -22,6 +23,10 @@ help:
 check-vars:
 	@test "$(ECR_REPO)" != "ECR_REPO" \
 	  || (echo "ERROR: set ECR_REPO to the repository created in the Marketplace portal" && exit 1)
+	@# The template's ImageUri default is what buyers launch with, so it must
+	@# name the tag this Makefile pushes.
+	@grep -q 'Default: $(IMAGE):$(VERSION)' $(TEMPLATE) \
+	  || (echo "ERROR: ImageUri default in $(TEMPLATE) does not match $(IMAGE):$(VERSION)" && exit 1)
 
 .PHONY: validate
 validate: ## Validate the CloudFormation deployment template

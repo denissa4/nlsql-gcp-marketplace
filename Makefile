@@ -9,7 +9,7 @@
 ECR_REGISTRY ?= 709825985650.dkr.ecr.us-east-1.amazonaws.com
 ECR_REPO     ?= nlsql/nlsql
 AWS_REGION   ?= us-east-1
-VERSION      ?= 1.0.1
+VERSION      ?= 1.0.2
 
 IMAGE   := $(ECR_REGISTRY)/$(ECR_REPO)
 TEMPLATE := cloudformation/nlsql-ecs-fargate.yaml

@@ -37,7 +37,7 @@ Parameters:
     Description: >-
       The NLSQL image from AWS Marketplace. Leave the default unless you are
       pinning an older published version.
-    Default: 709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/nlsql:1.0.1
+    Default: 709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/nlsql:1.0.2
 
   DatabaseType:
     Type: String

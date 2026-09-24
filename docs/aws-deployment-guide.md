@@ -4,8 +4,8 @@ The complete instructions for deploying NLSQL from AWS Marketplace onto Amazon E
 listing's **Usage instructions** field is capped at 4000 characters, so it carries a
 condensed form and links here.
 
-Applies to NLSQL **1.0.1**, image
-`709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/nlsql:1.0.1`.
+Applies to NLSQL **1.0.2**, image
+`709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/nlsql:1.0.2`.
 
 **Contents**
 

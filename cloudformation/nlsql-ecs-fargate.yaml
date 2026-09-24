@@ -42,7 +42,7 @@ Parameters:
   DatabaseType:
     Type: String
     Default: MSSQL
-    AllowedValues: [MSSQL, MySQL, PostgreSQL, Snowflake]
+    AllowedValues: [MSSQL, MySQL, PostgreSQL, Redshift, Snowflake]
   DataSource:
     Type: String
     Description: Database host, reachable from the subnets above.
@@ -51,7 +51,7 @@ Parameters:
   DbPort:
     Type: String
     Default: '1433'
-    Description: MSSQL 1433, MySQL 3306, PostgreSQL 5432. Ignored for Snowflake.
+    Description: MSSQL 1433, MySQL 3306, PostgreSQL 5432, Redshift 5439. Ignored for Snowflake.
   DbSchema:
     Type: String
     Default: ''

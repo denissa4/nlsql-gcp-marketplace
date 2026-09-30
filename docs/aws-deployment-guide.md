@@ -208,10 +208,15 @@ documents. Prepare a database user, ideally read-only (only `SELECT` statements 
 reachable from the subnets below. See [Database settings by engine](#database-settings-by-engine).
 
 **Networking.** Two or more **public** subnets (route to an internet gateway) in different
-Availability Zones of one VPC. The load balancer is internet-facing and shares the subnet list
-with the task, and the task needs outbound internet access to reach Bedrock, the Metering Service,
-Microsoft and api.nlsql.com. Keep `AssignPublicIp=ENABLED` so the task can use the internet
-gateway; set `DISABLED` only if those subnets give the task another way out.
+Availability Zones of one VPC. The load balancer is internet-facing, and by default the task runs
+in the same subnets with a public IP (`AssignPublicIp=ENABLED`) to reach Bedrock, the Metering
+Service, Microsoft and api.nlsql.com through the internet gateway.
+
+**If your database only admits known IP addresses** (an Azure SQL or other managed-database
+firewall, a Snowflake network policy, an on-premises firewall), that public IP changes at every
+deployment. Instead pass **`TaskSubnetIds`**: two or more private subnets whose route goes through
+a NAT gateway, and allow the NAT gateway's Elastic IP in the database's firewall. The load
+balancer stays in `SubnetIds`.
 
 **IAM permissions for whoever launches the stack:**
 
@@ -291,7 +296,8 @@ For DocsOnly, pass `Mode=DocsOnly` and leave out the database parameters.
 | `Mode` | no | `DocsAndSql` | `DocsAndSql`: NLSQL first, documents as the fallback. `DocsOnly`: documents only |
 | `VpcId` | yes | — | VPC to deploy into |
 | `SubnetIds` | yes | — | two or more public subnets in different AZs |
-| `AssignPublicIp` | no | `ENABLED` | keep `ENABLED` in public subnets |
+| `AssignPublicIp` | no | `ENABLED` | keep `ENABLED` in public subnets; ignored with `TaskSubnetIds` |
+| `TaskSubnetIds` | no | empty | private subnets behind a NAT gateway for the task, for a database that admits known IPs only |
 | `MicrosoftAppId` | yes | — | Azure Bot application (client) ID |
 | `MicrosoftAppTenantId` | yes | — | Entra tenant ID of the bot |
 | `CredentialsSecretArn` | yes | — | full ARN of the secret from Step 1 |
@@ -454,9 +460,11 @@ A Redshift cluster on a port other than 5439 is not supported in this version.
 
 The database must accept connections from the task. For Amazon RDS or Redshift in the same VPC,
 add a rule to the database's security group allowing the stack's task security group
-(`<stack-name> task`) on the database port. For a database outside AWS, allow the task's public
-IP (it changes on every deployment) or put a NAT gateway with a fixed address in front of the
-task. Where the engine's TLS is weak, keep the database inside the VPC or use a private
+(`<stack-name> task`) on the database port. For a database outside AWS that admits known IP
+addresses only, run the task in private subnets behind a NAT gateway (`TaskSubnetIds`) and allow
+the NAT gateway's Elastic IP; the task's own public IP changes at every deployment. A refusal
+shows in the logs as `cannot connect to the <engine> database (...)`, for Azure SQL with error
+40615 and the refused address. Where the engine's TLS is weak, keep the database inside the VPC or use a private
 connection.
 
 ## Troubleshooting
@@ -475,7 +483,7 @@ connection.
 | `/ready` returns `error` | usually S3 `AccessDenied`: a bucket in another Region, or SSE-KMS without `KmsKeyArn` | check the logs; fix and update the stack |
 | A chart or CSV link returns 404 | links point at the task's disk: files are deleted after 24 hours and do not survive a new deployment | ask the question again |
 | NL-to-SQL answers stop and documents answer instead; logs show `NLSQL API rejected the ApiToken` | invalid or revoked NLSQL token | generate a new token at nlsql.com, update the secret, force a new deployment |
-| `Can't connect to DataBase` | database unreachable or a parameter wrong | see [Database settings by engine](#database-settings-by-engine); DocsAndSql falls back to documents meanwhile |
+| Data questions are answered from the documents; logs show `both mode: NLSQL could not answer (database unreachable, see the nlsql-api log)` and `cannot connect to the <engine> database (...)` | the task cannot reach or log in to the database: a firewall (Azure SQL error 40615 names the refused address), a security group, or a wrong parameter or password | allow the task ([Database settings by engine](#database-settings-by-engine), `TaskSubnetIds` for a fixed egress IP) or fix the parameter or secret, then force a new deployment |
 | The bot never replies | messaging endpoint not the HTTPS `MessagingEndpoint`, Teams channel missing, or wrong/expired client secret or tenant ID | recheck Step 3; renew the secret ([Rotating credentials](#rotating-credentials)) |
 | Stack fails: "not supported in this Region" | the template's Region rule | deploy in a listed Region |
 | Stack fails on vCPU limits, or a deployment never starts its second task | Fargate On-Demand vCPU quota | request at least 8 vCPU |
@@ -514,6 +522,8 @@ in CloudWatch Logs Insights or `filter-log-events`:
 | `ThrottlingException` | Bedrock quota pressure |
 | `AccessDenied` | IAM, KMS or Bedrock model access problems |
 | `"NLSQL API"` | NLSQL API failures (DocsAndSql) |
+| `"both mode: NLSQL could not answer"` | why a question was answered from the documents (the reason, never the question) |
+| `"cannot connect to the"` | database connection failures, with the driver's reason |
 | `ERROR` | everything else worth a look |
 
 Useful alarms: ALB `UnHealthyHostCount` above 0 and `HTTPCode_Target_5XX_Count`, ECS

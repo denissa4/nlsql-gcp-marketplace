@@ -188,9 +188,17 @@ ignored; the script refuses a tracked file). The script creates the secret from 
 0600 temporary file, uses `AwsS3BucketName` as the documents bucket (creating it if needed),
 deploys into the default VPC unless `VPC_ID`/`SUBNET_IDS` are set, and tags everything
 `nlsql:purpose=test`; `destroy-test` refuses anything without that tag. `DOCS_DIR=<folder>` syncs
-sample documents and restarts the task. While the product is Draft or the seller account is not
-subscribed, the expected result is the fail-closed path: the task stops with exit 78 and
-`CustomerNotEntitledException`, and the circuit breaker rolls the stack back.
+sample documents and restarts the task.
+
+The seller account is entitled to its own product even while it is Draft: `RegisterUsage`
+verified on the first test stack (2026-09-30). The fail-closed path is exercised separately: run
+one task from the stack's task definition with a task role that lacks
+`aws-marketplace:RegisterUsage` (`aws ecs run-task ... --overrides '{"taskRoleArn":"<role>"}'`);
+it must stop with exit code 78 and `AccessDeniedException (exit 16)` in its log.
+
+The seller account's Bedrock model access decides which `LanguageModel` a test can use:
+`LANGUAGE_MODEL=<allowed value> make deploy-test ...` overrides the default. On 2026-09-30 Claude
+Sonnet 4.6 was enabled there and Claude Opus 5 (the template default) was not.
 
 ## Corrections to the NLSQL precedent
 

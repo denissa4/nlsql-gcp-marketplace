@@ -265,11 +265,13 @@ def fallback_reasons(session, log_group, since_ms):
 
 # --- the bot ------------------------------------------------------------------
 
-def entra_token(tenant, client_id, client_secret):
-    form = urllib.parse.urlencode({
-        "grant_type": "client_credentials", "client_id": client_id,
-        "client_secret": client_secret, "scope": f"{client_id}/.default",
-    }).encode()
+def entra_token(tenant, client_id, secret):
+    form = urllib.parse.urlencode([
+        ("grant_type", "client_credentials"),
+        ("client_id", client_id),
+        ("client_secret", secret),
+        ("scope", f"{client_id}/.default"),
+    ]).encode()
     req = urllib.request.Request(f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token", data=form)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.load(resp)["access_token"]

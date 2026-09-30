@@ -11,7 +11,7 @@ Metadata:
       - Label: {default: Mode}
         Parameters: [Mode]
       - Label: {default: Network}
-        Parameters: [VpcId, SubnetIds, AssignPublicIp]
+        Parameters: [VpcId, SubnetIds, AssignPublicIp, TaskSubnetIds]
       - Label: {default: Microsoft Teams bot}
         Parameters: [MicrosoftAppId, MicrosoftAppTenantId]
       - Label: {default: Credentials (AWS Secrets Manager)}
@@ -31,6 +31,7 @@ Metadata:
       VpcId: {default: VPC}
       SubnetIds: {default: Subnets}
       AssignPublicIp: {default: Assign public IP to the task}
+      TaskSubnetIds: {default: Private task subnets (optional)}
       MicrosoftAppId: {default: Microsoft App ID}
       MicrosoftAppTenantId: {default: Microsoft Entra tenant ID}
       CredentialsSecretArn: {default: Credentials secret ARN}
@@ -76,6 +77,15 @@ Parameters:
     Description: >-
       Keep ENABLED: the task reaches the internet through the public subnets'
       internet gateway. DISABLED only if those subnets give it another way out.
+      Ignored when TaskSubnetIds is set.
+  TaskSubnetIds:
+    Type: CommaDelimitedList
+    Default: ''
+    Description: >-
+      Optional. Private subnets (routed through a NAT gateway) for the task, for
+      a database that only admits known IP addresses: allow the NAT gateway's
+      Elastic IP. The load balancer stays in SubnetIds. Empty runs the task in
+      SubnetIds with a public IP, which changes at every deployment.
 
   MicrosoftAppId:
     Type: String
@@ -270,6 +280,7 @@ Conditions:
   CreateDocumentsBucket: !Equals [!Ref ExistingDocumentsBucket, '']
   HasKmsKey: !Not [!Equals [!Ref KmsKeyArn, '']]
   HasLanguageModelContext: !Not [!Equals [!Ref LanguageModelContext, '']]
+  HasTaskSubnets: !Not [!Equals [!Join ['', !Ref TaskSubnetIds], '']]
 
 Resources:
   # Deleted with the stack, so a stack of the same name can be created again.
@@ -666,9 +677,9 @@ Resources:
           Rollback: true
       NetworkConfiguration:
         AwsvpcConfiguration:
-          Subnets: !Ref SubnetIds
+          Subnets: !If [HasTaskSubnets, !Ref TaskSubnetIds, !Ref SubnetIds]
           SecurityGroups: [!Ref ServiceSecurityGroup]
-          AssignPublicIp: !Ref AssignPublicIp
+          AssignPublicIp: !If [HasTaskSubnets, DISABLED, !Ref AssignPublicIp]
       LoadBalancers:
         - ContainerName: ai-agent
           ContainerPort: 8080

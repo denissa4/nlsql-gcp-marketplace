@@ -14,3 +14,4 @@ docs/NLSQL-technical-GCP-architecture.pdf
 # A filled-in Teams manifest and package carry a real bot ID.
 teams/manifest.json
 teams/*.zip
+__pycache__/

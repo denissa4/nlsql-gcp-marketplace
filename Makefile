@@ -28,8 +28,9 @@ TEMPLATE    := cloudformation/nlsql-ai-agent-ecs-fargate.yaml
 PRODUCT_CODE  := dwcy8qajiorcyvb3gtznytb5g
 PUBKEY_SHA256 := 0afc3a22bdf3ab2074a80bdba2a08cd15c82888d1767a3119147d8c9653cf874
 
-# Seller-account test stack (scripts/deploy-test.sh).
+# Seller-account test stack (scripts/deploy-test.sh, scripts/e2e-test.py).
 ENV_FILE ?=
+SQL_QUESTION ?=
 MODE     ?= DocsAndSql
 
 LISTING_USAGE    := listing/usage-instructions.txt
@@ -39,7 +40,7 @@ LISTING_DESC     := listing/product-description-additions.md
 
 .PHONY: help
 help:
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: check-vars
@@ -165,6 +166,12 @@ deploy-test: ## Seller test stack from a local env file: ENV_FILE=<path> [MODE=D
 	@test -n "$(ENV_FILE)" || (echo "ERROR: ENV_FILE=<path to local env file> is required" && exit 1)
 	VERSION=$(VERSION) scripts/deploy-test.sh "$(ENV_FILE)" $(MODE)
 
+.PHONY: e2e-test
+e2e-test: ## Drive the test stack like Teams does: ENV_FILE=<path> [SQL_QUESTION="..."]
+	@test -n "$(ENV_FILE)" || (echo "ERROR: ENV_FILE=<path to local env file> is required" && exit 1)
+	python3 scripts/e2e-test.py "$(ENV_FILE)" $(if $(SQL_QUESTION),--sql-question "$(SQL_QUESTION)")
+
 .PHONY: destroy-test
-destroy-test: ## Delete the seller test stack and its secret
+destroy-test: ## Delete the seller test stack, its secret and the e2e capture function
+	-python3 scripts/e2e-test.py --teardown
 	scripts/destroy-test.sh $(ENV_FILE)

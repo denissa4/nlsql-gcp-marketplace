@@ -166,9 +166,22 @@ Marketplace repository, so no tag is spent. Then:
 
 ```shell
 make deploy-test ENV_FILE=<path-to-local-env-file>                  # DocsAndSql
+make e2e-test    ENV_FILE=<path-to-local-env-file> [SQL_QUESTION="..."]
 make deploy-test ENV_FILE=<path-to-local-env-file> MODE=DocsOnly    # same stack, switched
-make destroy-test                                                   # stack and secret
+make destroy-test                                                   # stack, secret, capture function
 ```
+
+`e2e-test` (`scripts/e2e-test.py`) exercises the deployed stack the way Microsoft Teams does, with
+no Teams tenant involved: a temporary Lambda function URL stands in for the Bot Connector (it is
+sent as the activities' `serviceUrl` and captures the bot's replies), and each Teams-shaped
+activity carries an Entra ID client-credentials token for the bot's own app ID. It checks
+`/health` and `/ready`, that the load balancer refuses requests that bypass CloudFront, that every
+turn is acknowledged within seconds and answered proactively exactly once, the welcome message,
+a document answer, a Teams file attachment answer, an NLSQL answer and its chart link
+(`SQL_QUESTION`, DocsAndSql), and that no secret from the env file appears in the task's logs.
+The default document question expects the sample document from `DOCS_DIR`. The capture function
+is deleted at the end (`--keep-capture` keeps it). A real Teams check is still the final step:
+paste the `MessagingEndpoint` output into the Azure Bot and chat with it.
 
 The env file uses the application's env names and is never committed (`.env` and `.env.*` are
 ignored; the script refuses a tracked file). The script creates the secret from it through a

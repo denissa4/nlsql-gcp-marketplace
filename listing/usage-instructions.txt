@@ -1,0 +1,35 @@
+NLSQL AI Agent 1.0.0
+Full guide: https://github.com/denissa4/nlsql-gcp-marketplace/blob/<commit>/docs/aws-deployment-guide.md
+
+Image: 709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-agent:1.0.0
+Deploy the CloudFormation template of this delivery option (Amazon ECS, AWS Fargate) in the subscribing account, in us-east-1, us-east-2, us-west-1, us-west-2, ca-central-1, sa-east-1, eu-west-1, eu-west-2, eu-west-3, eu-central-1, eu-north-1, ap-south-1, ap-northeast-1, ap-northeast-2, ap-southeast-1 or ap-southeast-2.
+
+BEFORE YOU START
+1. Amazon Bedrock console, Model catalog: open each Claude model you will use, submit the Anthropic use case form if asked, and run one prompt in the playground (needs AWS Marketplace subscribe permissions).
+2. Create a single-tenant Azure Bot for Microsoft Teams; note its App ID, tenant ID and a client secret.
+3. DocsAndSql mode: get a free API token at https://nlsql.com and a read-only database user.
+4. Two public subnets in different Availability Zones, with a route to your database.
+
+DEPLOY
+1. Create one Secrets Manager secret in the stack's Region, JSON keys: AppPassword (bot client secret); for DocsAndSql also ApiToken and DbPassword.
+2. Create the stack from the template. Set Mode, VpcId, SubnetIds, CredentialsSecretArn, MicrosoftAppId, MicrosoftAppTenantId, LanguageModel and, for DocsAndSql, DatabaseType, DataSource, DbName, DbUser (DbPort, DbSchema, Warehouse as needed). Acknowledge IAM capabilities; wait for CREATE_COMPLETE (15-25 min).
+3. Azure Bot, Settings, Configuration: set Messaging endpoint to the MessagingEndpoint output. Add the Microsoft Teams channel.
+4. Upload documents to the DocumentsBucket output, then run: aws ecs update-service --cluster <ClusterName> --service <ServiceName> --force-new-deployment
+5. Install the bot in Teams with the guide's manifest template (personal scope).
+
+HEALTH AND MONITORING
+- HealthCheck output: 200 once the subscription is verified, 503 before.
+- ReadinessCheck output: 200 {"status":"ready"} once documents are indexed.
+- Log group LogGroupName: "entitlement verified" at start; "cannot start" names the reason if the task stops.
+- ECS console, cluster, service: Events, Tasks and target health.
+
+DATA, ENCRYPTION, ROTATION, BACKUP
+Credentials live only in your Secrets Manager secret (AWS KMS; set KmsKeyArn for a customer managed key) and are injected by ECS at task start. Documents stay in your S3 bucket (SSE-S3, or your KMS key); it is the only data store, is kept when the stack is deleted, and the index is rebuilt from it at every start. Viewers use CloudFront HTTPS (TLS 1.2+); CloudFront reaches the load balancer over HTTP inside AWS, locked by a per-stack origin header. Charts and CSV exports stay on the task's encrypted disk for 24 h. Bedrock global inference may process prompts in any commercial AWS Region. To rotate, update the secret and force a new deployment; renew the Entra client secret before it expires. The template creates no KMS keys.
+
+COSTS AND QUOTAS
+Billed by AWS on top of the hourly software fee: Fargate (4 vCPU, 8 GB by default), load balancer, CloudFront, S3, Secrets Manager, CloudWatch Logs, public IPv4 and Amazon Bedrock tokens. The free trial covers the software fee only. Deployments briefly run two tasks: keep the Fargate On-Demand vCPU quota at 8 or more, and raise the model's Bedrock tokens-per-minute quota if answers throttle.
+
+EXTERNAL DEPENDENCIES
+This product requires an ongoing internet connection. The following ongoing external services are required to properly function: AWS Marketplace Metering Service, Amazon Bedrock, Amazon S3, AWS Secrets Manager, Amazon CloudWatch Logs, Amazon ECR, Microsoft Entra ID, Microsoft Bot Connector, Microsoft Teams and SharePoint file hosts (files sent to the bot) and, in DocsAndSql mode only, api.nlsql.com (question text only; free self-service token).
+
+Support: info@nlsql.com, https://nlsql.com/contacts

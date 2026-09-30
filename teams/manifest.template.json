@@ -1,0 +1,42 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.19",
+  "version": "1.0.0",
+  "id": "<MicrosoftAppId>",
+  "developer": {
+    "name": "NLSQL",
+    "websiteUrl": "https://nlsql.com",
+    "privacyUrl": "https://nlsql.com/privacy_policy",
+    "termsOfUseUrl": "https://nlsql.com/terms_of_use"
+  },
+  "name": {
+    "short": "NLSQL AI Agent",
+    "full": "NLSQL AI Agent: answers from your company documents and data"
+  },
+  "description": {
+    "short": "Ask questions about your company documents and business data.",
+    "full": "NLSQL AI Agent answers questions in plain language from your company documents stored in Amazon S3 and, when connected, from your SQL database, with charts and tables. Send it a file in a personal chat to ask questions about that file. It runs in your own AWS account."
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "accentColor": "#D85028",
+  "bots": [
+    {
+      "botId": "<MicrosoftAppId>",
+      "scopes": [
+        "personal"
+      ],
+      "supportsFiles": true,
+      "isNotificationOnly": false
+    }
+  ],
+  "permissions": [
+    "identity",
+    "messageTeamMembers"
+  ],
+  "validDomains": [
+    "<CloudFrontDomain>"
+  ]
+}

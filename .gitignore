@@ -8,3 +8,9 @@ docs/GCP-costs-estimate.csv
 docs/google-solution-validation-response.txt
 docs/NLSQL-technical-GCP-architecture.pdf
 .env
+# Local env files (test-stack credentials) and local template/parameter copies.
+.env.*
+*.local.yaml
+# A filled-in Teams manifest and package carry a real bot ID.
+teams/manifest.json
+teams/*.zip

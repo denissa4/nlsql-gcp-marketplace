@@ -240,6 +240,7 @@ def captured(session, log_group, since_ms):
 
 
 def task_log(session, log_group, since_ms, pattern):
+    """(timestamp_ms, message) of the task's log events since since_ms matching pattern."""
     logs = session.client("logs")
     out, token = [], None
     while True:
@@ -247,19 +248,19 @@ def task_log(session, log_group, since_ms, pattern):
         if token:
             kwargs["nextToken"] = token
         resp = logs.filter_log_events(**kwargs)
-        out.extend(ev["message"] for ev in resp.get("events", []))
+        out.extend((ev["timestamp"], ev["message"]) for ev in resp.get("events", []))
         token = resp.get("nextToken")
         if not token:
             return out
 
 
 def fallback_reasons(session, log_group, since_ms):
-    """Reason categories the bot logged for both-mode fallbacks since since_ms (never questions)."""
+    """(timestamp_ms, reason) the bot logged for both-mode fallbacks (never the question)."""
     reasons = []
-    for line in task_log(session, log_group, since_ms, '"both mode: NLSQL could not answer"'):
+    for ts, line in task_log(session, log_group, since_ms, '"both mode: NLSQL could not answer"'):
         m = re.search(r"could not answer \((.*?)\); asking Talk to Docs", line)
         if m:
-            reasons.append(m.group(1))
+            reasons.append((ts, m.group(1)))
     return reasons
 
 
@@ -477,6 +478,7 @@ def main():
             checks.append(("NLSQL answer", args.sql_question, None, lambda t: bool(t.strip()), "any answer"))
 
     sql_reply = None
+    windows = []  # (check name, start ms): log lines are attributed to the question asked in their window
     for name, text, atts, want, expect in checks:
         act = activity("message", conv, service_url, app_id, tenant, text=text, attachments=atts)
         q_since = int(time.time() * 1000) - 2000
@@ -493,9 +495,16 @@ def main():
                 f"{sum(r['edits'] for r in got)} in-place edit(s)")
         if name == "NLSQL answer" and answers:
             sql_reply = json.dumps(answers[0]["final"], ensure_ascii=False)
-        if both:
-            time.sleep(3)  # CloudWatch Logs delivery
-            reasons = fallback_reasons(session, outputs["LogGroupName"], q_since)
+        windows.append((name, q_since))
+
+    if both and windows:
+        # CloudWatch Logs can take several seconds to ingest; attribute by event timestamp afterwards.
+        time.sleep(20)
+        all_reasons = fallback_reasons(session, outputs["LogGroupName"], windows[0][1])
+        all_db_errors = task_log(session, outputs["LogGroupName"], windows[0][1], '"cannot connect to the"')
+        bounds = [w[1] for w in windows[1:]] + [int(time.time() * 1000) + 1]
+        for (name, start), end in zip(windows, bounds):
+            reasons = [r for ts, r in all_reasons if start <= ts < end]
             if name == "document answer":
                 res.add("document question: routed to the documents because NLSQL wrote no SQL",
                         reasons == ["not a question about the data"], f"logged reasons {reasons}")
@@ -503,7 +512,7 @@ def main():
                 res.add("file question: sent straight to the documents (NLSQL not asked)",
                         reasons == [], f"logged reasons {reasons}")
             elif name == "NLSQL answer":
-                db_errors = task_log(session, outputs["LogGroupName"], q_since, '"cannot connect to the"')
+                db_errors = [m for ts, m in all_db_errors if start <= ts < end]
                 if not reasons:
                     log("  info  NLSQL answered from the database")
                 else:

@@ -40,7 +40,7 @@ Microsoft Teams ──► Microsoft Bot Connector
 CloudFront distribution           ← HTTPS (TLS 1.2+), CloudFront's own certificate
       │  HTTP inside AWS, adds X-Origin-Verify: <this stack's unique ID>
       ▼
-Application Load Balancer :80     ← 403 for any request without that header
+Application Load Balancer :80     ← admits CloudFront only; 403 without that header
       │  HTTP :8080
       ▼
 ECS Fargate task (exactly one)    ← NLSQL AI Agent container, uid 10001
@@ -50,7 +50,8 @@ ECS Fargate task (exactly one)    ← NLSQL AI Agent container, uid 10001
       ├──► Amazon S3 documents bucket          (read-only)
       ├──► Microsoft Bot Connector             (replies) and Teams/SharePoint file hosts
       ├──► your database                       (DocsAndSql only)
-      └──► api.nlsql.com                       (question text → SQL, DocsAndSql only)
+      ├──► api.nlsql.com                       (question text → SQL, DocsAndSql only)
+      └──► cdn.plot.ly                         (map outlines for map answers, DocsAndSql only)
 ```
 
 | Resource | Notes |
@@ -58,13 +59,13 @@ ECS Fargate task (exactly one)    ← NLSQL AI Agent container, uid 10001
 | ECS cluster and Fargate service | exactly one task, rolling deployments with automatic rollback |
 | Task definition | linux/amd64, 4 vCPU / 8 GiB / 40 GiB disk by default, port 8080 |
 | Application Load Balancer | internet-facing, HTTP 80, idle timeout 120 s; default action 403 |
-| Listener rule | forwards only requests carrying CloudFront's origin header |
-| Target group | port **8080**, health check `/health` every 30 s |
+| Listener rule | forwards only requests carrying this stack's CloudFront origin header |
+| Target group | port **8080**, health check `/health` every 30 s, 300 s draining |
 | CloudFront distribution | HTTPS on the default `*.cloudfront.net` certificate, nothing cached |
 | S3 bucket | only if you do not name an existing one; private, SSE-S3, TLS-only, kept on delete |
 | ExecutionRole | pulls the image, writes logs, reads your one secret |
 | TaskRole | RegisterUsage, read-only access to the bucket, Claude on Bedrock |
-| Security groups | load balancer: 80 from anywhere; task: 8080 from the load balancer only |
+| Security groups | load balancer: 80 from CloudFront's origin-facing addresses only (AWS-managed prefix list); task: 8080 from the load balancer only |
 | CloudWatch log group | `/ecs/<stack-name>`, 14-day retention |
 
 Inside the container, nginx on 8080 is the only listening port. It routes `/api/messages` to
@@ -76,10 +77,15 @@ endpoint, and the load balancer has no certificate of its own. CloudFront suppli
 HTTPS endpoint with no custom domain or certificate to buy. Every TTL is zero; it exists only to
 terminate TLS.
 
-**Why the load balancer answers 403.** Its security group has to admit CloudFront, whose
-addresses change. Instead of an IP allow-list, CloudFront adds a header whose value is this
-stack's unique ID, and the listener forwards only requests that carry it. Requests sent straight
-to the load balancer's DNS name get `403 Forbidden`.
+**How the load balancer is kept behind CloudFront.** Its security group admits port 80 only from
+CloudFront's origin-facing addresses (the AWS-managed prefix list
+`com.amazonaws.global.cloudfront.origin-facing`), so a request sent straight to the load
+balancer's DNS name gets no answer. CloudFront also adds a header whose value is this stack's
+unique ID, and the listener forwards only requests that carry it, so a request through any other
+CloudFront distribution gets `403 Forbidden`. The hop from CloudFront to the load balancer is HTTP
+inside AWS, because the load balancer has no certificate of its own. AWS Security Hub control
+**CloudFront.9** reports the distribution's http-only origin for that reason; for this design the
+finding is expected and accepted.
 
 **Why port 8080.** The container runs as an unprivileged user (uid 10001), which cannot bind
 port 80, and Fargate cannot grant `NET_BIND_SERVICE` back. If you write your own task definition,
@@ -93,6 +99,20 @@ pin a conversation to one of several tasks. Scale up by giving the task more CPU
 **Why a turn gets an instant reply.** The bot acknowledges each Teams message at once and sends
 the answer when it is ready, so a long document search is not cut off by Bot Framework's 15 s or
 CloudFront's 60 s limits.
+
+**How a message is answered in DocsAndSql mode.** A message with a file attached (a file sent in
+Teams, or a named attachment in a [supported format](#step-6--load-your-documents)) is answered
+from that file. Every other message goes to NLSQL first, including one with a pasted image or
+screenshot: images are not read. When NLSQL writes no SQL (the question is not about your data) or
+cannot reach the database or the NLSQL API, your documents answer instead. If NLSQL has not
+answered within 330 seconds, the bot replies
+`Your data question is taking longer than expected. Please try again in a few minutes.` and does
+not ask the documents.
+
+**Who can call the bot.** `/api/messages` accepts requests from the Microsoft Bot Connector (Teams,
+and **Test in Web Chat** in the Azure portal) and from the bot's own app registration. Another app
+in your Microsoft Entra tenant that obtains a token for the bot gets `401`, and the log shows
+`[auth] rejected a request from an unexpected caller (iss=..., appid=...)`.
 
 ## 2. What it costs
 
@@ -127,6 +147,10 @@ global-inference price for that model in the Region you deploy in. See the
 
 These figures are indicative; check the AWS pricing pages for your Region.
 
+**Outside AWS.** The Azure Bot resource lives in your own Microsoft Azure subscription, where its
+standard Microsoft Teams channel is free; Microsoft 365 or Teams licences are your own. The NLSQL
+API token (DocsAndSql) is free.
+
 **Service quotas.** Check these before launching, in **Service Quotas** in the console:
 
 - **Fargate On-Demand vCPU resource count.** The task uses 4 vCPU, and every deployment briefly
@@ -136,8 +160,9 @@ These figures are indicative; check the AWS pricing pages for your Region.
   cross-Region inference. Low quotas show up as throttling errors in the logs. Request an
   increase, or choose a smaller model.
 - **Application Load Balancers per Region** (default 50), **VPC security groups** and **inbound
-  rules per security group** (default 60; the template adds one rule to each of its two groups),
-  and **CloudFront distributions per account**.
+  rules per security group** (default 60; the load balancer's one rule references CloudFront's
+  origin-facing prefix list, which counts as 55 rules), and **CloudFront distributions per
+  account**.
 
 If stack creation fails with a quota error, request an increase and create the stack again.
 
@@ -194,18 +219,20 @@ aws bedrock-runtime converse --region <region> \
 | `global.anthropic.claude-sonnet-4-6` | Claude Sonnet 4.6 | `anthropic.claude-sonnet-4-6` |
 | `global.anthropic.claude-haiku-4-5-20251001-v1:0` | Claude Haiku 4.5 | `anthropic.claude-haiku-4-5-20251001-v1:0` |
 
-**A Microsoft Teams bot registration.** Create an **Azure Bot** resource in the Microsoft 365
-tenant you use for Teams, with a **single-tenant** app registration. The standard Microsoft Teams
-channel is free. You need three values from it: the **Microsoft App ID**, a **client secret**
-(note its expiry date; see [Rotating credentials](#rotating-credentials)) and the **tenant
-ID**. Create it as an Azure Bot, not a bare Entra app registration: only the Azure Bot has the
-messaging-endpoint field used in Step 3.
+**A Microsoft Azure subscription and a Microsoft Teams bot registration.** Create an **Azure
+Bot** resource for the Microsoft 365 tenant you use for Teams, with a **single-tenant** app
+registration. The Azure Bot resource lives in a **Microsoft Azure subscription** of yours; the
+standard Microsoft Teams channel is free. You need three values from it: the **Microsoft App
+ID**, a **client secret** (note its expiry date; see [Rotating credentials](#rotating-credentials))
+and the **tenant ID**. Create it as an Azure Bot, not a bare Entra app registration: only the
+Azure Bot has the messaging-endpoint field used in Step 3.
 
 **DocsAndSql mode only: an NLSQL API token and a database.** Generate the token self-service at
 https://nlsql.com; it is free, with no separate purchase or approval. The NLSQL API receives the
 text of each question and returns SQL; it never receives database credentials, query results or
-documents. Prepare a database user, ideally read-only (only `SELECT` statements are issued),
-reachable from the subnets below. See [Database settings by engine](#database-settings-by-engine).
+documents. Use a read-only database user: the product runs the SQL the NLSQL API returns, so the
+user's permissions are what limits it. The database must be reachable from the subnets below. See
+[Database settings by engine](#database-settings-by-engine).
 
 **Networking.** Two or more **public** subnets (route to an internet gateway) in different
 Availability Zones of one VPC. The load balancer is internet-facing, and by default the task runs
@@ -216,7 +243,9 @@ Service, Microsoft and api.nlsql.com through the internet gateway.
 firewall, a Snowflake network policy, an on-premises firewall), that public IP changes at every
 deployment. Instead pass **`TaskSubnetIds`**: two or more private subnets whose route goes through
 a NAT gateway, and allow the NAT gateway's Elastic IP in the database's firewall. The load
-balancer stays in `SubnetIds`.
+balancer stays in `SubnetIds`. The private subnets must be in the same VPC, and only in
+Availability Zones where `SubnetIds` also has a subnet: the load balancer cannot reach a task in
+any other zone, so that task never becomes healthy.
 
 **IAM permissions for whoever launches the stack:**
 
@@ -265,13 +294,17 @@ they never appear in the task definition, the image, the template or the logs.
 From the listing, choose **Continue to Subscribe**, then **Continue to Configuration**, pick the
 **Amazon ECS** delivery option and the version, and **Continue to Launch**. The launch page links
 the deployment template. Download it, then in the CloudFormation console choose **Create stack**,
-**With new resources**, **Upload a template file**. Or use the CLI:
+**With new resources**, **Upload a template file**. For the first launch, under **Stack failure
+options** choose **Preserve successfully provisioned resources**: if the first task cannot
+start, the stack then keeps its log group, cluster and stopped tasks so you can read why (see
+[If creation fails](#if-creation-fails)). Or use the CLI, where `--disable-rollback` does the same:
 
 ```shell
 aws cloudformation create-stack \
   --stack-name nlsql-ai-agent \
   --template-body file://nlsql-ai-agent-ecs-fargate.yaml \
   --capabilities CAPABILITY_IAM \
+  --disable-rollback \
   --region <region> \
   --parameters \
     ParameterKey=Mode,ParameterValue=DocsAndSql \
@@ -297,7 +330,7 @@ For DocsOnly, pass `Mode=DocsOnly` and leave out the database parameters.
 | `VpcId` | yes | — | VPC to deploy into |
 | `SubnetIds` | yes | — | two or more public subnets in different AZs |
 | `AssignPublicIp` | no | `ENABLED` | keep `ENABLED` in public subnets; ignored with `TaskSubnetIds` |
-| `TaskSubnetIds` | no | empty | private subnets behind a NAT gateway for the task, for a database that admits known IPs only |
+| `TaskSubnetIds` | no | empty | private subnets behind a NAT gateway for the task, for a database that admits known IPs only; same VPC, only in Availability Zones that also have one of `SubnetIds` |
 | `MicrosoftAppId` | yes | — | Azure Bot application (client) ID |
 | `MicrosoftAppTenantId` | yes | — | Entra tenant ID of the bot |
 | `CredentialsSecretArn` | yes | — | full ARN of the secret from Step 1 |
@@ -311,7 +344,7 @@ For DocsOnly, pass `Mode=DocsOnly` and leave out the database parameters.
 | `DbName` | DocsAndSql | empty | database name |
 | `DbPort` | no | empty | MySQL and PostgreSQL only; empty means 3306 / 5432 |
 | `DbSchema` | Snowflake | empty | Snowflake schema; other engines use the user's default schema |
-| `DbUser` | DocsAndSql | empty | database user, read-only recommended |
+| `DbUser` | DocsAndSql | empty | database user; use a read-only one, since the product runs the SQL the NLSQL API returns |
 | `Warehouse` | Snowflake | empty | Snowflake warehouse |
 | `TaskCpu` | no | `4096` | `2048` or `4096` CPU units |
 | `TaskMemory` | no | `8192` | MiB; 4096–16384 with 2048 CPU, 8192–30720 with 4096 CPU |
@@ -324,14 +357,27 @@ pair Fargate does not offer.
 
 ### Wait for it
 
-Creation takes roughly 15–25 minutes: CloudFront, then the first task starting, verifying the
-subscription and indexing documents. The outputs exist only once the stack completes:
+Creation takes roughly 15–25 minutes: CloudFront, then the first task starting and verifying the
+subscription. The outputs exist only once the stack completes:
 
 ```shell
 aws cloudformation wait stack-create-complete --stack-name nlsql-ai-agent --region <region>
 ```
 
-If it rolls back, the first failure is at the bottom of:
+`CREATE_COMPLETE` does not mean your documents are indexed: indexing starts once the subscription
+is verified and goes on after the stack completes. `/ready` (Step 5) says when it is done.
+
+To watch the task start, follow its logs from another terminal once the log group exists (a
+minute or two after creation starts). The output stays on your screen even if the stack rolls back
+and deletes the log group:
+
+```shell
+aws logs tail /ecs/nlsql-ai-agent --follow --region <region>
+```
+
+### If creation fails
+
+The first failure is at the bottom of:
 
 ```shell
 aws cloudformation describe-stack-events --stack-name nlsql-ai-agent --region <region> \
@@ -339,8 +385,12 @@ aws cloudformation describe-stack-events --stack-name nlsql-ai-agent --region <r
   --output table
 ```
 
-`ECS Deployment Circuit Breaker was triggered` means the task kept stopping; see
-[Troubleshooting](#troubleshooting).
+`ECS Deployment Circuit Breaker was triggered` means the task kept stopping. With rollback disabled
+the stack stops in `CREATE_FAILED` and keeps its resources: read the stopped tasks' reasons (ECS
+lists stopped tasks for about an hour) and the logs ([Monitoring](#monitoring)), and match them in
+[Troubleshooting](#troubleshooting). If the stack rolled back instead (the default), it ends in
+`ROLLBACK_COMPLETE`: its cluster, stopped tasks and log group are gone, and a stack in that state
+can only be deleted. Either way, fix the cause, delete the stack, and create it again.
 
 ## Step 3 — Point your Teams bot at the deployment
 
@@ -359,6 +409,7 @@ aws cloudformation describe-stacks --stack-name nlsql-ai-agent --region <region>
 | `DocumentsBucket` | where your documents go |
 | `ClusterName`, `ServiceName` | for `aws ecs update-service` |
 | `LogGroupName` | container logs |
+| `TaskSecurityGroupId` | the task's security group, to allow in a database's security group |
 
 Then, in the Azure portal:
 
@@ -408,7 +459,8 @@ curl -sS -w ' %{http_code}\n' https://<cloudfront-domain>/ready
 ```
 
 Other statuses, all with 503: `waiting_for_entitlement`, `initializing` (indexing in progress),
-`no_documents` (the bucket is empty; see Step 6) and `error` (see the logs).
+`no_documents` (nothing was indexed: the bucket is empty, or the task cannot read it; see
+[Troubleshooting](#troubleshooting)) and `error` (see the logs).
 
 **The log confirms metering.** Look for the entitlement line at task start:
 
@@ -422,7 +474,8 @@ aws logs filter-log-events --log-group-name /ecs/nlsql-ai-agent --region <region
 
 **Ask a real question.** Message the bot in Teams, and send it a file to ask about. This is the
 only end-to-end proof that Teams, CloudFront, the container, Bedrock and your database work
-together. The load balancer's own DNS name returning `403 Forbidden` is expected.
+together. The load balancer's own DNS name not answering is expected: its security group admits
+CloudFront only.
 
 ## Step 6 — Load your documents
 
@@ -433,12 +486,31 @@ removing documents, start a new task:
 aws s3 sync <local-folder> s3://<DocumentsBucket>/ --region <region>
 aws ecs update-service --cluster <ClusterName> --service <ServiceName> \
   --force-new-deployment --region <region>
+aws ecs wait services-stable --cluster <ClusterName> --services <ServiceName> --region <region>
+curl -sS -w ' %{http_code}\n' https://<cloudfront-domain>/ready   # repeat until {"status":"ready"} 200
 ```
 
-The old task keeps answering until the new one is healthy. Watch `/ready` return to 200.
-Supported formats: PDF, Word (`.docx`), Excel (`.xlsx`, `.xls`), OpenDocument (`.odt`, `.ods`),
-and text formats (`.txt`, `.csv`, `.md`, `.json`, `.html`). Files sent to the bot in a Teams chat
-(up to 25 MB) are answered from directly and are not added to the bucket.
+The new task takes over as soon as its health check passes, which does not wait for indexing:
+until indexing finishes, it answers document questions with a short "still initializing" reply.
+Until the old task has drained, `/ready` may still be answered by the old one, so poll it only
+after `services-stable` returns.
+
+Supported formats, in the bucket and as files sent to the bot:
+
+- PDF (`.pdf`);
+- Word (`.docx`, tables included);
+- Excel (`.xlsx`, all worksheets);
+- OpenDocument (`.odt`, `.ods`);
+- text files (`.txt`, `.csv`, `.md`, `.json`, `.jsonl`, `.html`, `.htm`), in UTF-8 or a Western
+  single-byte encoding (Windows-1252, Latin-1).
+
+The older Excel format `.xls` is not supported: save it as `.xlsx`. A scanned PDF with no text
+layer cannot be read either. A document in the bucket that cannot be read is skipped, and the log
+shows `Talk-to-Docs: could not read <name> (<ErrorName>); skipped.` Files sent to the bot in a Teams
+chat (up to 25 MB) are answered from directly and are not added to the bucket. If the bot cannot
+read one, it replies
+`I could not read the attached file <name>. Supported formats: PDF, Word (.docx), Excel (.xlsx), OpenDocument (.odt, .ods) and text files (.txt, .csv, .md, .json, .html).`
+Images and screenshots pasted into a message are not read.
 
 ---
 
@@ -459,8 +531,8 @@ DocsAndSql only.
 A Redshift cluster on a port other than 5439 is not supported in this version.
 
 The database must accept connections from the task. For Amazon RDS or Redshift in the same VPC,
-add a rule to the database's security group allowing the stack's task security group
-(`<stack-name> task`) on the database port. For a database outside AWS that admits known IP
+add a rule to the database's security group allowing the stack's task security group (the
+`TaskSecurityGroupId` output) on the database port. For a database outside AWS that admits known IP
 addresses only, run the task in private subnets behind a NAT gateway (`TaskSubnetIds`) and allow
 the NAT gateway's Elastic IP; the task's own public IP changes at every deployment. A refusal
 shows in the logs as `cannot connect to the <engine> database (...)`, for Azure SQL with error
@@ -469,24 +541,38 @@ connection.
 
 ## Troubleshooting
 
+### First launch
+
 | Symptom | Cause | Fix |
 |---|---|---|
-| Answers say the model is unavailable; logs show `AccessDeniedException` mentioning the model or `aws-marketplace:Subscribe` | the Claude model is not enabled in this account and Region | enable it as in [Before you start](#3-before-you-start); the task role deliberately cannot subscribe |
+| Stack stuck in `CREATE_IN_PROGRESS` on `Service`, then `ECS Deployment Circuit Breaker was triggered` | the task keeps stopping; usually one of the rows below | see [If creation fails](#if-creation-fails). With rollback disabled, read the stopped reason and the logs (ECS console, cluster, service, **Tasks**, **Stopped**). After a rollback (`ROLLBACK_COMPLETE`) nothing is left to read: delete the stack and create it again with rollback disabled, or while following the logs |
+| Task stops with exit code 78; log shows `AWS Marketplace: NLSQL AI Agent cannot start: this AWS account is not subscribed` (`CustomerNotEntitledException`) | the deploying account is not subscribed | subscribe in this account and wait a few minutes, then delete the stack and create it again |
+| Task stops with exit code 78 and another `cannot start` reason | see the reason: access denied (task role lacks `aws-marketplace:RegisterUsage`), no credentials, unsupported Region, product code edited | delete the stack and create it again from the unmodified template, in a supported Region |
+| Stopped reason `ResourceInitializationError: unable to retrieve secret` or `did not contain json key` | the secret is in another Region, lacks a key (`ApiToken`/`DbPassword` in DocsAndSql), or uses a KMS key without `KmsKeyArn` | fix the secret or pass `KmsKeyArn`, then delete the stack and create it again |
+| Stack fails: "not supported in this Region" | the template's Region rule | deploy in a listed Region |
+| Stack fails on vCPU limits, or a deployment never starts its second task | Fargate On-Demand vCPU quota | request at least 8 vCPU |
+| Stack fails on `LoadBalancerSecurityGroup` with a rules-per-security-group limit | CloudFront's prefix list counts as 55 inbound rules, more than this account's quota | raise **Inbound or outbound rules per security group** to at least 55 (the default is 60) |
+
+### Running stack
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Document answers fail with `Sorry — NLSQL AI Agent could not answer right now.`; at task start the log shows `NLSQL AI Agent: Bedrock probe for <model> failed (AccessDeniedException: ...)` | the Claude model is not enabled in this account and Region | enable it as in [Before you start](#3-before-you-start); the task role deliberately cannot subscribe |
 | Logs show `ThrottlingException` or "Too many tokens"; slow or failed answers | Bedrock tokens-per-minute or requests-per-minute quota | request a quota increase for the model's global cross-Region inference, or choose a smaller model |
-| `/health` and `/api/messages` return 503 for a few seconds after a task starts | the subscription check has not completed yet | normal; the load balancer only sends traffic once it passes |
-| Task stops with exit code 78; log shows `AWS Marketplace: NLSQL AI Agent cannot start: this AWS account is not subscribed` (`CustomerNotEntitledException`) | the deploying account is not subscribed | subscribe in this account, wait a few minutes, then force a new deployment |
-| Task stops with exit code 78 and another `cannot start` reason | see the reason: access denied (task role lacks `aws-marketplace:RegisterUsage`), no credentials, unsupported Region, product code edited | redeploy the unmodified template in a supported Region |
-| Stack stuck in `CREATE_IN_PROGRESS` on `Service`, then rolls back with `ECS Deployment Circuit Breaker was triggered` | the task keeps stopping | ECS console, cluster, service, **Tasks**, **Stopped**: read the stopped reason and the logs; usually one of the rows above or below |
-| Stopped reason `ResourceInitializationError: unable to retrieve secret` or `did not contain json key` | the secret is in another Region, lacks a key (`ApiToken`/`DbPassword` in DocsAndSql), or uses a KMS key without `KmsKeyArn` | fix the secret or pass `KmsKeyArn`, then update the stack |
+| `/health` and `/api/messages` return 503 for a few seconds after a task starts | the subscription check has not completed yet | normal; the container itself answers 503 until it passes |
+| Task stops with exit code 78 and a `cannot start` reason | see [First launch](#first-launch); for example the subscription was cancelled | fix the cause, then force a new deployment |
 | `/ready` returns `initializing` for a long time | indexing a large document set | wait; raise `TaskCpu`/`TaskMemory` if it takes too long |
-| `/ready` returns `no_documents` | the bucket is empty, or `ExistingDocumentsBucket` names the wrong bucket | upload documents and force a new deployment (Step 6) |
-| `/ready` returns `error` | usually S3 `AccessDenied`: a bucket in another Region, or SSE-KMS without `KmsKeyArn` | check the logs; fix and update the stack |
+| `/ready` returns `no_documents` | nothing was indexed: the bucket is empty or `ExistingDocumentsBucket` names the wrong bucket, or the task cannot read it (S3 `AccessDenied` from SSE-KMS without `KmsKeyArn`, or from a bucket policy). Then the logs show `Failed to download S3 objects` (the bucket could not be listed) or `Failed to process S3 object` (an object could not be read) | upload documents, or fix the access (pass `KmsKeyArn` and update the stack, or fix the bucket policy); then force a new deployment (Step 6) |
+| `/ready` returns `error` | the document service could not start, for example because of its embedding or Claude settings | the logs show `Initialization failed` with the reason; fix it and update the stack |
+| A document is missing from answers; the log shows `Talk-to-Docs: could not read <name> (<ErrorName>); skipped.` | the file is in an unsupported format (for example `.xls`), damaged, or holds no text (for example a scanned PDF) | convert it to a [supported format](#step-6--load-your-documents), upload it and force a new deployment |
+| The bot replies `I could not read the attached file <name>. Supported formats: ...` | the attached file is in an unsupported format or damaged | send it in a supported format |
+| A data question gets `Your data question is taking longer than expected. Please try again in a few minutes.` | NLSQL did not answer within 330 s: a slow database or NLSQL API, or several data questions waiting (NLSQL answers one at a time) | ask again later; for slow queries, check the database and the NLSQL lines in the logs |
+| Logs show `[auth] rejected a request from an unexpected caller (iss=..., appid=...)` | something other than the Bot Connector or the bot's own app called the messaging endpoint, for example another app in your Entra tenant | nothing to fix: Teams and Web Chat are not affected. If the `appid` is unexpected, find that app in Entra ID |
 | A chart or CSV link returns 404 | links point at the task's disk: files are deleted after 24 hours and do not survive a new deployment | ask the question again |
 | NL-to-SQL answers stop and documents answer instead; logs show `NLSQL API rejected the ApiToken` | invalid or revoked NLSQL token | generate a new token at nlsql.com, update the secret, force a new deployment |
 | Data questions are answered from the documents; logs show `both mode: NLSQL could not answer (database unreachable, see the nlsql-api log)` and `cannot connect to the <engine> database (...)` | the task cannot reach or log in to the database: a firewall (Azure SQL error 40615 names the refused address), a security group, or a wrong parameter or password | allow the task ([Database settings by engine](#database-settings-by-engine), `TaskSubnetIds` for a fixed egress IP) or fix the parameter or secret, then force a new deployment |
-| The bot never replies | messaging endpoint not the HTTPS `MessagingEndpoint`, Teams channel missing, or wrong/expired client secret or tenant ID | recheck Step 3; renew the secret ([Rotating credentials](#rotating-credentials)) |
-| Stack fails: "not supported in this Region" | the template's Region rule | deploy in a listed Region |
-| Stack fails on vCPU limits, or a deployment never starts its second task | Fargate On-Demand vCPU quota | request at least 8 vCPU |
+| Map questions are answered from the documents; the logs mention `cdn.plot.ly` | the task cannot reach https://cdn.plot.ly, where map charts load their outlines from | allow outbound HTTPS to cdn.plot.ly ([External dependencies](#external-dependencies)) |
+| The bot never replies | messaging endpoint not the HTTPS `MessagingEndpoint`, Teams channel missing, or wrong/expired client secret or tenant ID (the logs then show `[process]` errors from the bot) | recheck Step 3; renew the secret ([Rotating credentials](#rotating-credentials)) |
 
 ## Operating the deployment
 
@@ -524,6 +610,10 @@ in CloudWatch Logs Insights or `filter-log-events`:
 | `"NLSQL API"` | NLSQL API failures (DocsAndSql) |
 | `"both mode: NLSQL could not answer"` | why a question was answered from the documents (the reason, never the question) |
 | `"cannot connect to the"` | database connection failures, with the driver's reason |
+| `"Bedrock probe"` | whether Claude answered at task start (model access) |
+| `"Failed to download S3 objects"`, `"Failed to process S3 object"` | a documents bucket that could not be listed, or an object that could not be read |
+| `"could not read"` | documents and attached files that could not be read |
+| `"rejected a request"` | callers of the messaging endpoint other than the Bot Connector and the bot's own app |
 | `ERROR` | everything else worth a look |
 
 Useful alarms: ALB `UnHealthyHostCount` above 0 and `HTTPCode_Target_5XX_Count`, ECS
@@ -539,8 +629,9 @@ Useful alarms: ALB `UnHealthyHostCount` above 0 and `HTTPCode_Target_5XX_Count`,
 | `secretsmanager:GetSecretValue` on your one secret ARN | inject the credentials at task start |
 | `kms:Decrypt` on `KmsKeyArn`, only through Secrets Manager (only if set) | decrypt a secret encrypted with your key |
 
-**TaskRole** is the running application's only AWS identity. The image refuses static access
-keys, so these are the only permissions it can use:
+**TaskRole** is the running application's only AWS identity. The application uses the ECS task
+role, and static AWS credential variables are ignored on ECS, so these are the only AWS
+permissions it uses:
 
 | Permission | Purpose |
 |---|---|
@@ -557,7 +648,7 @@ keys, so these are the only permissions it can use:
 | Documents | your S3 bucket | SSE-S3 (AES-256) for the bucket the stack creates; your settings for an existing bucket | HTTPS; the created bucket denies non-TLS requests |
 | Document index | task memory and disk, rebuilt at every start | Fargate ephemeral storage, AES-256 with AWS-managed keys | — |
 | Charts and CSV exports of query results | the task's disk, deleted after 24 hours, at unguessable 128-bit random URLs | Fargate ephemeral storage, AES-256 | HTTPS from CloudFront to the viewer |
-| Questions and answers | not stored by the application (conversation memory is off) | — | Teams to CloudFront TLS 1.2+; CloudFront to the load balancer HTTP inside AWS, locked by the origin header; task to Bedrock, S3 and Microsoft over HTTPS |
+| Questions and answers | not stored by the application (conversation memory is off) | — | Teams to CloudFront TLS 1.2+; CloudFront to the load balancer HTTP inside AWS, admitted from CloudFront's addresses only and with a per-stack header (Security Hub CloudFront.9 flags this http-only origin; accepted, as the load balancer has no certificate of its own); task to Bedrock, S3 and Microsoft over HTTPS |
 | Prompts to Claude | Amazon Bedrock; a global profile may process a request in any commercial AWS Region. Per AWS, Bedrock does not use prompts or answers to train models or share them with model providers | not stored by the application | HTTPS |
 | Question text (DocsAndSql) | sent to api.nlsql.com to generate SQL | not stored by the application | HTTPS |
 | Logs | CloudWatch Logs, 14 days; secrets, tokens and request headers are never logged | CloudWatch Logs service encryption | TLS |
@@ -613,19 +704,27 @@ one. Answer throughput beyond that is set by your Bedrock quotas.
 
 ### Upgrading
 
-Read the new version's release notes, then update the stack with the new version's template
-(which carries the new `ImageUri` default), keeping your parameters:
+Read the new version's release notes, then update the stack with the new version's template,
+which carries the new `ImageUri` default. Keep every other parameter with `UsePreviousValue=true`,
+but not `ImageUri`: a kept value is the old image, and only an omitted parameter takes the new
+default. Omit `ImageUri`, or pass the new image explicitly:
 
 ```shell
 aws cloudformation update-stack --stack-name nlsql-ai-agent --region <region> \
   --template-body file://nlsql-ai-agent-ecs-fargate.yaml --capabilities CAPABILITY_IAM \
-  --parameters ParameterKey=Mode,UsePreviousValue=true ...
+  --parameters ParameterKey=Mode,UsePreviousValue=true ... \
+    ParameterKey=ImageUri,ParameterValue=709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-agent:<new-version>
 ```
 
-(one `UsePreviousValue=true` per parameter), or change only `ImageUri` in the console. ECS
-starts the new task, waits for it to pass health checks, then stops the old one; a failing new
+(one `UsePreviousValue=true` per parameter other than `ImageUri`). In the console, choose
+**Update**, **Replace current template**, upload the new template, and overwrite the pre-filled
+`ImageUri` with the new image. Changing only `ImageUri` with the current template is enough only
+when the release notes say the template did not change.
+
+ECS starts the new task, waits for it to pass health checks, then stops the old one; a failing new
 version rolls back automatically. Documents are re-indexed from the bucket, and chart links from
-the old task stop working. There is no data to migrate.
+the old task stop working. There is no data to migrate. As in Step 6, run
+`aws ecs wait services-stable` after the stack update, then poll `/ready` until it returns 200.
 
 ### Uninstalling
 
@@ -653,10 +752,14 @@ are required to properly function:
 
 - **AWS:** AWS Marketplace Metering Service, Amazon Bedrock, Amazon S3, AWS Secrets Manager,
   Amazon CloudWatch Logs and Amazon ECR.
-- **Microsoft:** Microsoft Entra ID, the Microsoft Bot Framework Bot Connector, and the Microsoft
-  Teams and SharePoint file hosts that files sent to the bot are downloaded from.
+- **Microsoft:** a Microsoft Azure subscription for the Azure Bot resource (the standard Microsoft
+  Teams channel is free), Microsoft Entra ID, the Microsoft Bot Framework Bot Connector, and the
+  Microsoft Teams and SharePoint file hosts that files sent to the bot are downloaded from.
 - **NLSQL API** at api.nlsql.com, in DocsAndSql mode only: receives question text, returns SQL.
   The token is free and self-service.
+- **Plotly CDN** at https://cdn.plot.ly, in DocsAndSql mode only: map answers load their map
+  outlines from it, both in the task (for the chart image) and in the viewer's browser (for the
+  interactive map). Other charts do not use it.
 
 No packages are downloaded on deployment: the embedding model is part of the image.
 

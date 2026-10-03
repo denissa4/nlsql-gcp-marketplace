@@ -1,0 +1,10 @@
+NLSQL AI Agent - test handbook (synthetic document for deployment testing)
+
+Travel policy: employees may book economy class for flights shorter than six hours.
+Business class is allowed for flights of six hours or longer, with manager approval.
+The daily meal allowance while travelling is 65 US dollars.
+
+Support hours: the internal IT help desk is open Monday to Friday, 08:00 to 18:00 UTC.
+The emergency on-call number is extension 4455.
+
+The code word for this test deployment is AMBER-FALCON-42.

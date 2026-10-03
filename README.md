@@ -57,6 +57,8 @@ listing/release-notes/<version>.md               Add new version: version title 
 listing/product-description-additions.md         Update product information: required disclosures
 teams/                                           Teams manifest template, placeholder icons
 scripts/deploy-test.sh, destroy-test.sh          seller-account test stack
+scripts/e2e-test.py                              end-to-end test of that stack, the way Teams drives it
+scripts/e2e-docs/                                sample document deploy-test syncs and e2e-test asks about
 scripts/listing-check.py                         listing length and character checks
 Makefile                                         checks, publishing and test-stack targets
 ```
@@ -72,21 +74,33 @@ at. The load-bearing parts:
   billing path, not only an entitlement check. The image strips every other credential and
   endpoint source (`AWS_ENDPOINT_URL*`, static keys, profiles, proxies, CA bundles) before it
   calls, pins the regional metering endpoint, and verifies the returned signature against the
-  baked key with a nonce bound to the task ARN. Anything but success or throttling stops the task
-  (container exit 78), and the bot and document service refuse to serve until they have verified
-  the signature themselves.
+  baked key with a nonce bound to the task ARN. A definitive refusal (not subscribed, access
+  denied, an untrusted product code, a signature that does not verify, ...) stops the task with
+  container exit 78. Throttling is retried for up to 6 hours and transient Metering errors (5xx,
+  connection failures) for up to 30 minutes, with `/health` at 503 meanwhile; behind the load
+  balancer ECS replaces a task still retrying once the 300 s health-check grace period is over (a
+  new task and a new `RegisterUsage` call, no exit 78). The bot, NLSQL and the document service
+  each refuse to serve until they have verified the signature themselves.
 - **`AWS_MARKETPLACE_PRODUCT_CODE`** may only repeat the baked code. Editing it in a downloaded
   template stops the task instead of buying unmetered use.
 - **`ImageUri` has an `AllowedPattern`** that accepts only
   `709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-agent:<x.y.z>`. The test scripts deploy a
   temporary copy that also accepts a private test repository.
 - **CloudFront terminates TLS**, because Bot Framework refuses plain HTTP and the load balancer has
-  no certificate. The listener's default action is `403`; a rule forwards only requests carrying
-  `X-Origin-Verify` with the stack's UUID (`!Select [2, !Split ['/', !Ref AWS::StackId]]`), which
-  CloudFront adds as an origin custom header. `OriginReadTimeout` is 60 s: the bot acknowledges
-  turns at once and replies proactively.
-- **`/health` returns 503 until the subscription is verified**, so the target group never routes
-  to an unentitled task. `/ready` reports document indexing and is not used for routing.
+  no certificate. The load balancer's security group admits port 80 only from the AWS-managed
+  prefix list `com.amazonaws.global.cloudfront.origin-facing` (its per-Region IDs are in the
+  `RegionMap` mapping; the reference counts as 55 inbound rules). The listener's default action is
+  `403`; a rule forwards only requests carrying `X-Origin-Verify` with the stack's UUID
+  (`!Select [2, !Split ['/', !Ref AWS::StackId]]`), which CloudFront adds as an origin custom
+  header. The CloudFront-to-ALB hop is HTTP, so Security Hub control CloudFront.9 flags the
+  distribution; the guide records that as accepted. `OriginReadTimeout` is 60 s: the bot
+  acknowledges turns at once and replies proactively. Draining is 300 s, so an answer still being
+  computed in the old task during a deployment has up to five minutes to finish.
+- **`/health` returns 503 until the subscription is verified**, and ECS replaces a task whose
+  target never turns healthy. It is not what keeps an unentitled task from serving: with a single
+  target the load balancer fails open and forwards to it anyway. nginx's own 503 gate on
+  `/api/messages` and each service's verification of the signature do that. `/ready` reports
+  document indexing and is not used for routing; `CREATE_COMPLETE` does not wait for it.
 - **`DesiredCount` is fixed at 1.** Chart and CSV links live on the task's disk, NLSQL keeps
   process-global state, and Bot Framework carries no ALB cookie, so a second task would break
   conversations. There is no stickiness to configure. Scaling is vertical (`TaskCpu`,
@@ -121,12 +135,13 @@ Validate any change before publishing: `make validate`.
 | `check-tags` | fails if `$(VERSION)` already exists in the Marketplace repository |
 | `validate` | `validate-template` plus cfn-lint (local, `pipx run`, or in a Python container) |
 | `login` | docker login to the Marketplace registry |
-| `push` | refuses unless `ai-agent:$(VERSION)` is labelled `com.nlsql.stage=enforce`, bakes the product key (`com.nlsql.pubkey-sha256`) and is linux/amd64; then `check-tags`, tag and push |
+| `push` | refuses unless `ai-agent:$(VERSION)` is labelled `com.nlsql.stage=enforce`, bakes the product key (`com.nlsql.pubkey-sha256`) and is linux/amd64, and unless the image itself (`docker run`) holds the key with that hash and trusts only the product code in `aws_marketplace.py`, `aws_marketplace_verify.py` and `bot/entitlement.js`; then `check-tags`, tag and push |
 | `digest` | prints the pushed image digest |
-| `template-url` | prints the commit-pinned template and guide URLs; fails on uncommitted files, an unpushed commit, or a URL of 256 characters or more |
+| `template-url` | prints the commit-pinned template and guide URLs; fails on uncommitted changes to the template, `docs`, `listing` or `teams`, an unpushed commit, or a URL of 256 characters or more |
 | `listing-check` | length and printable-ASCII checks on the listing texts (`<commit>` counted as 40 characters) |
-| `no-secrets` | fails on credential-shaped strings, AWS account IDs other than the Marketplace registry's, or a tracked `.env` |
-| `deploy-test`, `destroy-test` | the seller-account test stack below |
+| `no-secrets` | fails on credential-shaped strings, AWS account IDs other than the Marketplace registry's, or a tracked `.env`, in the working tree and in the branch's history (`git log -p`); allowed IDs and sample values are filtered per match, never per line |
+| `deploy-test`, `destroy-test` | the seller-account test stack below (`STACK_NAME`, default `nlsql-ai-agent-test`); `deploy-test` also syncs `DOCS_DIR` (default `scripts/e2e-docs`) |
+| `e2e-test` | drives that stack the way Teams does (`scripts/e2e-test.py`); `SQL_QUESTION`, `DOCS_QUESTION`, `DOCS_EXPECT` |
 
 ## Publishing a version (seller)
 
@@ -171,6 +186,9 @@ make deploy-test ENV_FILE=<path-to-local-env-file> MODE=DocsOnly    # same stack
 make destroy-test                                                   # stack, secret, capture function
 ```
 
+The test targets take `STACK_NAME=<name>` (default `nlsql-ai-agent-test`, or `$STACK_NAME` from
+the environment), so `e2e-test` and `destroy-test` act on the stack `deploy-test` made.
+
 `e2e-test` (`scripts/e2e-test.py`) exercises the deployed stack the way Microsoft Teams does, with
 no Teams tenant involved: a temporary Lambda function URL stands in for the Bot Connector (it is
 sent as the activities' `serviceUrl` and captures the bot's replies), and each Teams-shaped
@@ -178,23 +196,31 @@ activity carries an Entra ID client-credentials token for the bot's own app ID. 
 `/health` and `/ready`, that the load balancer refuses requests that bypass CloudFront, that every
 turn is acknowledged within seconds and answered proactively exactly once, the welcome message,
 a document answer, a Teams file attachment answer, an NLSQL answer and its chart link
-(`SQL_QUESTION`, DocsAndSql), and that no secret from the env file appears in the task's logs.
-The default document question expects the sample document from `DOCS_DIR`. The capture function
-is deleted at the end (`--keep-capture` keeps it). A real Teams check is still the final step:
-paste the `MessagingEndpoint` output into the Azure Bot and chat with it.
+(`SQL_QUESTION`, DocsAndSql), and that no secret from the env file appears in the task's logs:
+the bot secret under either of its names and every key that names a password, secret or token,
+in every log event since the stack was created. The load balancer check accepts no connection
+(its security group admits CloudFront only) or `403`. The default document question expects
+`AMBER-FALCON-42` from `scripts/e2e-docs/nlsql-ai-agent-test-handbook.txt`, which
+`make deploy-test` syncs; `DOCS_QUESTION` and `DOCS_EXPECT` ask about your own documents
+instead. The capture function and its role are deleted at the end, also when the run fails
+(`--keep-capture` keeps them), and only if they carry the test tag. A real Teams check is still
+the final step: paste the `MessagingEndpoint` output into the Azure Bot and chat with it.
 
 The env file uses the application's env names and is never committed (`.env` and `.env.*` are
 ignored; the script refuses a tracked file). The script creates the secret from it through a
 0600 temporary file, uses `AwsS3BucketName` as the documents bucket (creating it if needed),
 deploys into the default VPC unless `VPC_ID`/`SUBNET_IDS` are set, and tags everything
-`nlsql:purpose=test`; `destroy-test` refuses anything without that tag. `DOCS_DIR=<folder>` syncs
-sample documents and restarts the task.
+`nlsql:purpose=test`; `destroy-test` refuses anything without that tag. `make deploy-test` syncs
+`DOCS_DIR` (default `scripts/e2e-docs`; `DOCS_DIR=<folder>` for your own, `DOCS_DIR=` for none)
+to the documents bucket and restarts the task.
 
 The seller account is entitled to its own product even while it is Draft: `RegisterUsage`
 verified on the first test stack (2026-09-30). The fail-closed path is exercised separately: run
 one task from the stack's task definition with a task role that lacks
 `aws-marketplace:RegisterUsage` (`aws ecs run-task ... --overrides '{"taskRoleArn":"<role>"}'`);
-it must stop with exit code 78 and `AccessDeniedException (exit 16)` in its log.
+it must stop with exit code 78 and log
+`AWS Marketplace: NLSQL AI Agent cannot start: the ECS task role may not call aws-marketplace:RegisterUsage (AccessDeniedException) (exit 16).`
+This is test T6; it passed on the seller account.
 
 The seller account's Bedrock model access decides which `LanguageModel` a test can use:
 `LANGUAGE_MODEL=<allowed value> make deploy-test ...` overrides the default. On 2026-09-30 Claude
@@ -214,13 +240,26 @@ Sonnet 4.6 was enabled there and Claude Opus 5 (the template default) was not.
 - [ ] The real hourly price and the free trial (1 task, 30 days) on the product's offer, which
       is still Draft with no price.
 - [ ] Apply `listing/product-description-additions.md`: the add-on sentence, the external services
-      list, and replacements for the highlight and short description, which still promise Azure
-      infrastructure and a website assistant this listing does not deliver.
+      list (with the Azure subscription and cdn.plot.ly), and replacements for the highlight and
+      short description, which still promise Azure infrastructure and a website assistant this
+      listing does not deliver.
 - [ ] Portal Regions equal to the template's Region rule (16 Regions).
-- [ ] Test stack in us-east-1: fail-closed run (T2) while unentitled; entitled run (T1) with the
-      E2E suite after the seller account subscribes; secret-leak log check.
+- [x] Test stack in us-east-1, entitled run (T1): `RegisterUsage` verified on the seller account
+      (2026-09-30).
+- [x] Fail-closed run (T6): a task whose role lacks `aws-marketplace:RegisterUsage` stops with exit
+      78 ([Testing](#testing-in-the-seller-account)). It replaces T2 ("while unentitled"), which
+      cannot run: the seller account is entitled to its own Draft product.
+- [x] E2E suite (`make e2e-test`) on the test stack: 18 of 18 passed (image rc2, Claude Sonnet 4.6).
+- [x] Secret-leak log check, part of the E2E suite.
+- [x] msodbcsql17 against Azure SQL from the test stack: connection and TLS behaviour as recorded
+      in the guide's engine table.
+- [ ] Before `make push`, run `make deploy-test e2e-test` again on an image built with the
+      final-review fixes (bot caller check, NLSQL timeout reply, attachment rule, NLSQL entitlement
+      gate) and this template (CloudFront prefix list, 300 s draining).
 - [ ] Replace the placeholder Teams icons with the brand mark (same names and sizes).
-- [ ] The Teams bot needs an Azure Bot registration (free standard channel). The NLSQL listing
-      passed review with the same requirement; keep the wording factual if review asks.
+- [x] The Teams bot needs an Azure Bot registration, in a Microsoft Azure subscription (free
+      standard channel): disclosed in the usage instructions, the guide and the product-description
+      additions. The NLSQL listing passed review with the same requirement; keep the wording
+      factual if review asks.
 - [ ] NLSQL listing follow-up: the same entitlement holes fixed here, the public Docker Hub image,
       and its Node 20 runtime.

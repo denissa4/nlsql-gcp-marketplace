@@ -32,6 +32,12 @@ PUBKEY_SHA256 := 0afc3a22bdf3ab2074a80bdba2a08cd15c82888d1767a3119147d8c9653cf87
 ENV_FILE ?=
 SQL_QUESTION ?=
 MODE     ?= DocsAndSql
+STACK_NAME ?= nlsql-ai-agent-test
+# Synced to the documents bucket by deploy-test (DOCS_DIR= skips it); holds the
+# document e2e-test's default question is answered from.
+DOCS_DIR ?= scripts/e2e-docs
+DOCS_QUESTION ?=
+DOCS_EXPECT ?=
 
 LISTING_USAGE    := listing/usage-instructions.txt
 LISTING_DELIVERY := listing/delivery-option-description.txt
@@ -108,6 +114,15 @@ push: check-vars ## Guard, tag and push $(LOCAL_IMAGE) to Marketplace ECR
 	@# template pins X86_64.
 	@test "$$(docker image inspect -f '{{ .Os }}/{{ .Architecture }}' $(LOCAL_IMAGE))" = linux/amd64 \
 	  || (echo "ERROR: $(LOCAL_IMAGE) is not linux/amd64" && exit 1)
+	@# Labels describe the build; check what the image runs: the baked key, and
+	@# every product code the entitlement program, the verifier and the bot trust.
+	@baked=$$(docker run --rm --network none --platform linux/amd64 --entrypoint sh $(LOCAL_IMAGE) -c \
+	    'sha256sum /app/api/nlsql/aws_marketplace_pubkey_v1.pem | cut -d" " -f1 && cd /app/api \
+	     && /venv/bin/python -c "from nlsql import aws_marketplace as m, aws_marketplace_verify as v; print(m.BAKED_PRODUCT_CODE, *sorted(m.TRUSTED_PRODUCT_CODES | v.TRUSTED_PRODUCT_CODES))" \
+	     && node -p "[...require(process.argv[1]).TRUSTED_PRODUCT_CODES].join()" /app/bot/entitlement.js' \
+	    | tr '\n' ' '); \
+	  test "$$baked" = "$(PUBKEY_SHA256) $(PRODUCT_CODE) $(PRODUCT_CODE) $(PRODUCT_CODE) " \
+	    || (echo "ERROR: $(LOCAL_IMAGE) bakes another public key or product code: $$baked" && exit 1)
 	@$(MAKE) --no-print-directory check-tags
 	@$(MAKE) --no-print-directory login
 	docker tag $(LOCAL_IMAGE) $(IMAGE):$(VERSION)
@@ -121,8 +136,8 @@ digest: ## Print the digest of the pushed $(VERSION)
 
 .PHONY: template-url
 template-url: ## Print the commit-pinned template and guide URLs for the listing
-	@test -z "$$(git status --porcelain -- $(TEMPLATE) docs listing)" \
-	  || (echo "ERROR: commit the template, docs and listing texts first" && exit 1)
+	@test -z "$$(git status --porcelain -- $(TEMPLATE) docs listing teams)" \
+	  || (echo "ERROR: commit the template, docs, listing texts and teams/ first" && exit 1)
 	@commit=$$(git rev-parse HEAD); \
 	  test -n "$$(git branch -r --contains $$commit 2>/dev/null)" \
 	    || (echo "ERROR: $$commit is not on any pushed branch; push it first" && exit 1); \
@@ -139,39 +154,48 @@ listing-check: ## Enforce Marketplace length and character limits on listing tex
 
 # Credential-shaped strings, and AWS account IDs other than the Marketplace
 # registry's and documentation placeholders, must never reach this public
-# repository. Placeholders (<...>, ${...}, $VAR) and CloudFormation references
-# are not values.
+# repository: not in the working tree, and not anywhere in the branch's history
+# (`git log -p`), which stays public after a file is fixed. Every match is
+# judged on its own, so an allowed value never hides another on the same line.
+# Placeholders (<...>, ${...}, $VAR) cannot match SECRET_VALUE; SAMPLE_VALUES
+# are the dummy values the published history already carries.
 SECRET_VALUE  := (ApiToken|AppPassword|DbPassword|clientSecret|client_secret|LanguageModelApiKey|EmbeddingModelApiKey|GraphModelApiKey|HF_TOKEN|HUGGING_FACE_HUB_TOKEN|SasToken|AzureStorageSasToken|AwsSecretAccessKey|aws_secret_access_key|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|private_key|MicrosoftAppPassword|DIRECT_LINE_SECRET)["'\'':= ]+[A-Za-z0-9+/!@%^&*_~.-]{8,}
 SECRET_SHAPES := AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|[A-Za-z0-9_~.-]{3}[0-9]Q~[A-Za-z0-9_~.-]{31,34}|hf_[A-Za-z0-9]{30,}|gh[pousr]_[A-Za-z0-9]{36}|xox[abprs]-[A-Za-z0-9-]{10,}|sv=20[0-9]{2}-[0-9]{2}-[0-9]{2}&.*sig=|AccountKey=[A-Za-z0-9+/=]{40,}
-PLACEHOLDER   := <[^>]*>|\$$\{|\$$\(|\$$[A-Za-z_]|ValueFrom|Description|ParameterKey|\{Name:|SECRET_(VALUE|SHAPES)
+SAMPLE_VALUES := "(YOUR_[A-Z_]+|verify-not-a-real-[a-z]+)$$|:client_secret": client_secret$$
+ALLOWED_IDS   := 709825985650|000000000000|111122223333
 
 .PHONY: no-secrets
-no-secrets: ## Fail if a credential or account ID is committed (this repo is public)
+no-secrets: ## Fail if a credential or account ID is committed, now or in history (this repo is public)
 	@files=$$(git ls-files -co --exclude-standard | grep -vE '\.(png|jpg|ico)$$' \
 	    | while read -r f; do if [ -f "$$f" ]; then echo "$$f"; fi; done); \
-	  hits=$$(grep -nIE '$(SECRET_VALUE)' $$files | grep -vE '$(PLACEHOLDER)'); \
-	  shapes=$$(grep -nIE '$(SECRET_SHAPES)' $$files | grep -v 'SECRET_SHAPES'); \
-	  accounts=$$(grep -nIE '(^|[^0-9])[0-9]{12}([^0-9]|$$)' $$files \
-	    | grep -vE '709825985650|000000000000|111122223333'); \
+	  scan() { grep -onIE "$$1" $$files; \
+	    git log -p --no-color --no-ext-diff | grep -aonE "$$1" | sed 's/^/history:/'; }; \
+	  hits=$$(scan '$(SECRET_VALUE)' | grep -vE '$(SAMPLE_VALUES)'); \
+	  shapes=$$(scan '$(SECRET_SHAPES)'); \
+	  accounts=$$(scan '[0-9]{12,}' | grep -E ':[0-9]{12}$$' | grep -vE ':($(ALLOWED_IDS))$$'); \
 	  if [ -n "$$hits$$shapes$$accounts" ]; then \
 	    printf '%s\n' "$$hits" "$$shapes" "$$accounts" | sed '/^$$/d' | cut -c1-160; \
-	    echo "ERROR: possible credential or account ID committed" && exit 1; fi; \
+	    echo "ERROR: possible credential or account ID committed (history: find it with git log -S'<value>')" \
+	      && exit 1; fi; \
 	  for f in .env .env.local; do \
 	    if git ls-files --error-unmatch $$f >/dev/null 2>&1; then echo "ERROR: $$f is tracked" && exit 1; fi; \
 	  done; \
 	  echo "  no credential-shaped strings or account IDs found"
 
 .PHONY: deploy-test
-deploy-test: ## Seller test stack from a local env file: ENV_FILE=<path> [MODE=DocsOnly]
+deploy-test: ## Seller test stack from a local env file: ENV_FILE=<path> [MODE=DocsOnly] [DOCS_DIR=<folder>]
 	@test -n "$(ENV_FILE)" || (echo "ERROR: ENV_FILE=<path to local env file> is required" && exit 1)
-	VERSION=$(VERSION) scripts/deploy-test.sh "$(ENV_FILE)" $(MODE)
+	VERSION=$(VERSION) STACK_NAME="$(STACK_NAME)" DOCS_DIR="$(DOCS_DIR)" scripts/deploy-test.sh "$(ENV_FILE)" $(MODE)
 
 .PHONY: e2e-test
-e2e-test: ## Drive the test stack like Teams does: ENV_FILE=<path> [SQL_QUESTION="..."]
+e2e-test: ## Drive the test stack like Teams does: ENV_FILE=<path> [SQL_QUESTION=, DOCS_QUESTION=, DOCS_EXPECT=]
 	@test -n "$(ENV_FILE)" || (echo "ERROR: ENV_FILE=<path to local env file> is required" && exit 1)
-	python3 scripts/e2e-test.py "$(ENV_FILE)" $(if $(SQL_QUESTION),--sql-question "$(SQL_QUESTION)")
+	python3 scripts/e2e-test.py "$(ENV_FILE)" --stack "$(STACK_NAME)" \
+	  $(if $(SQL_QUESTION),--sql-question "$(SQL_QUESTION)") \
+	  $(if $(DOCS_QUESTION),--docs-question "$(DOCS_QUESTION)") \
+	  $(if $(DOCS_EXPECT),--docs-expect "$(DOCS_EXPECT)")
 
 .PHONY: destroy-test
 destroy-test: ## Delete the seller test stack, its secret and the e2e capture function
-	-python3 scripts/e2e-test.py --teardown
-	scripts/destroy-test.sh $(ENV_FILE)
+	-python3 scripts/e2e-test.py --teardown --stack "$(STACK_NAME)"
+	STACK_NAME="$(STACK_NAME)" scripts/destroy-test.sh $(ENV_FILE)

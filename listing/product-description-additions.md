@@ -27,22 +27,32 @@ description should carry this list too, so buyers see it before subscribing:
 >   Bedrock (Claude models, billed to your AWS account), Amazon S3 (your documents),
 >   AWS Secrets Manager (your credentials), Amazon CloudWatch Logs, Amazon ECR
 >   (the product image).
-> - Microsoft: Microsoft Entra ID (bot authentication), Microsoft Bot Framework Bot
->   Connector (message delivery to and from Teams), and the Microsoft Teams and
->   SharePoint file hosts from which files sent to the bot are downloaded.
+> - Microsoft: a Microsoft Azure subscription for the Azure Bot resource (the
+>   standard Microsoft Teams channel is free), Microsoft Entra ID (bot
+>   authentication), Microsoft Bot Framework Bot Connector (message delivery to and
+>   from Teams), and the Microsoft Teams and SharePoint file hosts from which files
+>   sent to the bot are downloaded.
 > - NLSQL API at api.nlsql.com, in DocsAndSql mode only: receives the text of each
 >   question to translate it into SQL. It never receives database credentials,
 >   query results or documents. The API token is free and self-service at
 >   https://nlsql.com, with no separate purchase or approval.
+> - Plotly CDN at https://cdn.plot.ly, in DocsAndSql mode only: map answers load
+>   their map outlines from it, in the task and in the viewer's browser. Other
+>   charts do not use it.
 >
-> None of these require a payment method or charges beyond this subscription and
-> your own AWS usage.
+> Your AWS usage, Amazon Bedrock included, is billed to your AWS account. The Azure
+> subscription and any Microsoft 365 or Teams licences are your own, under your
+> agreements with Microsoft. The NLSQL API token is free, and the Plotly CDN needs
+> no account.
 
 ## 3. Highlights (replace the current one)
 
 The current highlight says the product is built on "Azure Bot Service" and
-"leverages the robustness of Azure infrastructure". That is no longer true of this
-listing, and AWS rejects language that directs buyers to another cloud platform.
+"leverages the robustness of Azure infrastructure". Only the second claim is
+withdrawn: the product now runs in the buyer's AWS account, and AWS rejects
+language that directs buyers to another cloud platform. The first is still true
+(every Teams message passes through Azure Bot Service, for the buyer's own Azure
+Bot resource) and is disclosed in section 2 as a dependency, not as a highlight.
 Suggested replacements (each at most 250 characters):
 
 > Ask questions in Microsoft Teams and get answers grounded in your own documents
@@ -53,8 +63,8 @@ Suggested replacements (each at most 250 characters):
 > your documents when a question is not about your data.
 
 > Deploys from one CloudFormation template on Amazon ECS and AWS Fargate:
-> non-root container, IAM task role, credentials in AWS Secrets Manager, no access
-> keys.
+> non-root container, IAM task role (no AWS access keys needed), credentials in AWS
+> Secrets Manager.
 
 ## 4. Short description (suggested replacement)
 

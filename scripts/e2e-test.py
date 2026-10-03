@@ -6,6 +6,11 @@ Usage:
                         [--sql-question "..."] [--docs-question "..." --docs-expect "..."]
     scripts/e2e-test.py --teardown [--stack ...]      remove the capture function and its role
 
+--stack defaults to $STACK_NAME, as in deploy-test.sh, else nlsql-ai-agent-test.
+The default document question expects AMBER-FALCON-42 from
+scripts/e2e-docs/nlsql-ai-agent-test-handbook.txt, which `make deploy-test`
+syncs to the documents bucket.
+
 It drives the deployed bot the way Microsoft Teams does, without Teams:
 
 1. A temporary AWS Lambda function URL stands in for the Bot Connector. Its URL
@@ -13,9 +18,10 @@ It drives the deployed bot the way Microsoft Teams does, without Teams:
    POSTs to <serviceUrl>/v3/conversations/...) land in its CloudWatch log. It
    also serves a small text file for the attachment test.
 2. An Entra ID client-credentials token for the bot's own app ID (from the env
-   file) authorises each activity: the Agents SDK accepts tokens whose audience
-   is the app ID from the app's own tenant, and replies with a token for the
-   same app, so no real Teams tenant or channel is involved.
+   file) authorises each activity: besides the Bot Connector's own tokens, the
+   bot accepts only tokens issued to its own app ID (any other app in the
+   tenant gets 401), and replies with a token for the same app, so no real
+   Teams tenant or channel is involved.
 3. Teams-shaped activities are POSTed to the stack's MessagingEndpoint through
    CloudFront, and the captured replies are checked.
 
@@ -24,7 +30,10 @@ CloudFront; every activity is acknowledged within ACK_LIMIT seconds (turns are
 answered proactively); the welcome message; a document answer; an attachment
 answer; in DocsAndSql mode an NLSQL answer, whose chart link must be served
 with no-store; exactly one reply per question; and no secret value from the env
-file appears anywhere in the task's log group. Secret values are never printed.
+file (the bot secret under either name, and every key naming a password, secret
+or token) appears in the task's log group since the stack was created. Secret
+values are never printed. The capture function is removed at the end, also
+when the run fails, unless --keep-capture is given.
 """
 
 import argparse
@@ -85,6 +94,8 @@ def read_env(path):
             line = raw.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
+            if line.startswith("export "):
+                line = line[len("export "):]
             key, _, value = line.partition("=")
             value = value.strip()
             if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
@@ -189,19 +200,27 @@ def ensure_capture(session, stack):
 def teardown(session, stack):
     fn_name, role_name = capture_names(stack)
     lam, iam, logs = session.client("lambda"), session.client("iam"), session.client("logs")
+    deleted_function = False
     try:
         tags = lam.list_tags(Resource=lam.get_function(FunctionName=fn_name)["Configuration"]["FunctionArn"])["Tags"]
         if tags.get("nlsql:purpose") != "test":
             sys.exit(f"refusing to delete {fn_name}: it is not tagged nlsql:purpose=test")
         lam.delete_function(FunctionName=fn_name)
         log(f"deleted function {fn_name}")
+        deleted_function = True
     except lam.exceptions.ResourceNotFoundException:
         pass
+    # Lambda creates this log group untagged, so it goes only with the tagged
+    # function it belongs to.
+    if deleted_function:
+        try:
+            logs.delete_log_group(logGroupName=f"/aws/lambda/{fn_name}")
+        except logs.exceptions.ResourceNotFoundException:
+            pass
     try:
-        logs.delete_log_group(logGroupName=f"/aws/lambda/{fn_name}")
-    except logs.exceptions.ResourceNotFoundException:
-        pass
-    try:
+        tags = {t["Key"]: t["Value"] for t in iam.list_role_tags(RoleName=role_name)["Tags"]}
+        if tags.get("nlsql:purpose") != "test":
+            sys.exit(f"refusing to delete {role_name}: it is not tagged nlsql:purpose=test")
         for p in iam.list_attached_role_policies(RoleName=role_name)["AttachedPolicies"]:
             iam.detach_role_policy(RoleName=role_name, PolicyArn=p["PolicyArn"])
         iam.delete_role(RoleName=role_name)
@@ -377,34 +396,8 @@ def wait_reply(session, log_group, since_ms, conv_id, activity_id, timeout=REPLY
 
 # --- main ---------------------------------------------------------------------
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("env_file", nargs="?")
-    ap.add_argument("--stack", default="nlsql-ai-agent-test")
-    ap.add_argument("--region", default=os.environ.get("AWS_REGION", "us-east-1"))
-    ap.add_argument("--docs-question", default="What is the code word for this test deployment?")
-    ap.add_argument("--docs-expect", default="AMBER-FALCON-42")
-    ap.add_argument("--sql-question", default="",
-                    help="DocsAndSql: a question your NLSQL KPIs can answer (default: skip the NLSQL answer check)")
-    ap.add_argument("--sql-expect", default="",
-                    help="DocsAndSql: text the NLSQL answer must contain (makes the database check strict)")
-    ap.add_argument("--teardown", action="store_true", help="remove the capture function and role, then exit")
-    ap.add_argument("--keep-capture", action="store_true", help="leave the capture function in place")
-    args = ap.parse_args()
-
-    session = boto3.Session(region_name=args.region)
-    if args.teardown:
-        teardown(session, args.stack)
-        return 0
-    if not args.env_file:
-        ap.error("env_file is required")
-    env = read_env(args.env_file)
-    app_id = env.get("connections__serviceConnection__settings__clientId") or env.get("MicrosoftAppId", "")
-    secret = env.get("connections__serviceConnection__settings__clientSecret") or env.get("MicrosoftAppPassword", "")
-    tenant = env.get("connections__serviceConnection__settings__tenantId") or env.get("MicrosoftAppTenantId", "")
-    if not (app_id and secret and tenant):
-        sys.exit("the env file lacks the bot's clientId, clientSecret or tenantId")
-
+def run_checks(args, session, env, app_id, secret, tenant):
+    """Every check against the deployed stack; returns the Result."""
     cfn = session.client("cloudformation")
     stack = cfn.describe_stacks(StackName=args.stack)["Stacks"][0]
     outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
@@ -437,8 +430,12 @@ def main():
                   cfn.describe_stack_resources(StackName=args.stack)["StackResources"]
                   if r["LogicalResourceId"] == "LoadBalancer")
     lb_dns = session.client("elbv2").describe_load_balancers(LoadBalancerArns=[lb_arn])["LoadBalancers"][0]["DNSName"]
-    d, _, _ = http("GET", f"http://{lb_dns}/health")
-    res.add("load balancer refuses requests without the CloudFront header", d == 403, f"got {d}")
+    try:
+        d, _, _ = http("GET", f"http://{lb_dns}/health", timeout=10)
+        detail = f"got {d}"
+    except OSError as exc:  # its security group admits CloudFront's addresses only
+        d, detail = None, f"no connection ({type(exc).__name__})"
+    res.add("load balancer refuses requests that bypass CloudFront", d in (None, 403), detail)
 
     # 3. conversations through CloudFront
     log("capture function:")
@@ -531,14 +528,17 @@ def main():
         else:
             log("  note: the NLSQL answer carried no chart or export link")
 
-    # 4. no secret value in the task's logs
+    # 4. no secret value in the task's logs: the bot secret as resolved above
+    # (clientSecret or MicrosoftAppPassword), and every key naming a password,
+    # secret or token. Since the stack was created, so every task's start-up
+    # lines are included.
     log("logs:")
-    secrets = [v for k, v in env.items()
-               if k in ("connections__serviceConnection__settings__clientSecret", "ApiToken", "DbPassword")
-               and len(v) >= 8]
+    secrets = {secret} | {v for k, v in env.items() if re.search(r"password|secret|token", k, re.IGNORECASE)}
+    secrets = sorted(s for s in secrets if len(s) >= 8)
     leaks = 0
     logs = session.client("logs")
-    kwargs = {"logGroupName": outputs["LogGroupName"], "startTime": int(time.time() * 1000) - 6 * 3600 * 1000}
+    kwargs = {"logGroupName": outputs["LogGroupName"],
+              "startTime": int(stack["CreationTime"].timestamp() * 1000)}
     scanned = 0
     while True:
         resp = logs.filter_log_events(**kwargs)
@@ -550,9 +550,43 @@ def main():
         kwargs["nextToken"] = resp["nextToken"]
     res.add("no secret value in the task's log group", leaks == 0,
             f"{scanned} events scanned for {len(secrets)} secret values")
+    return res
 
-    if not args.keep_capture:
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("env_file", nargs="?")
+    ap.add_argument("--stack", default=os.environ.get("STACK_NAME") or "nlsql-ai-agent-test")
+    ap.add_argument("--region", default=os.environ.get("AWS_REGION", "us-east-1"))
+    ap.add_argument("--docs-question", default="What is the code word for this test deployment?")
+    ap.add_argument("--docs-expect", default="AMBER-FALCON-42")
+    ap.add_argument("--sql-question", default="",
+                    help="DocsAndSql: a question your NLSQL KPIs can answer (default: skip the NLSQL answer check)")
+    ap.add_argument("--sql-expect", default="",
+                    help="DocsAndSql: text the NLSQL answer must contain (makes the database check strict)")
+    ap.add_argument("--teardown", action="store_true", help="remove the capture function and role, then exit")
+    ap.add_argument("--keep-capture", action="store_true", help="leave the capture function in place")
+    args = ap.parse_args()
+
+    session = boto3.Session(region_name=args.region)
+    if args.teardown:
         teardown(session, args.stack)
+        return 0
+    if not args.env_file:
+        ap.error("env_file is required")
+    env = read_env(args.env_file)
+    app_id = env.get("connections__serviceConnection__settings__clientId") or env.get("MicrosoftAppId", "")
+    secret = env.get("connections__serviceConnection__settings__clientSecret") or env.get("MicrosoftAppPassword", "")
+    tenant = env.get("connections__serviceConnection__settings__tenantId") or env.get("MicrosoftAppTenantId", "")
+    if not (app_id and secret and tenant):
+        sys.exit("the env file lacks the bot's clientId, clientSecret or tenantId")
+
+    try:
+        res = run_checks(args, session, env, app_id, secret, tenant)
+    finally:
+        # Also when a check crashes: the capture function is a public URL.
+        if not args.keep_capture:
+            teardown(session, args.stack)
 
     log("")
     log(f"summary: {len(res.rows) - len(res.failed)} passed, {len(res.failed)} failed")

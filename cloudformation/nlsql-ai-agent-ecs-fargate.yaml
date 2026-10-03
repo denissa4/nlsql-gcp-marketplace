@@ -84,7 +84,9 @@ Parameters:
     Description: >-
       Optional. Private subnets (routed through a NAT gateway) for the task, for
       a database that only admits known IP addresses: allow the NAT gateway's
-      Elastic IP. The load balancer stays in SubnetIds. Empty runs the task in
+      Elastic IP. The load balancer stays in SubnetIds. Use subnets of the same
+      VPC, only in Availability Zones that also have one of SubnetIds: the load
+      balancer cannot reach a task in any other zone. Empty runs the task in
       SubnetIds with a public IP, which changes at every deployment.
 
   MicrosoftAppId:
@@ -181,7 +183,9 @@ Parameters:
   DbUser:
     Type: String
     Default: ''
-    Description: DocsAndSql only. A read-only user is recommended; only SELECT statements are issued.
+    Description: >-
+      DocsAndSql only. Use a read-only user: the product runs the SQL the NLSQL
+      API returns.
   Warehouse:
     Type: String
     Default: ''
@@ -273,6 +277,28 @@ Rules:
                '25600', '26624', '27648', '28672', '29696', '30720']
             - !Ref TaskMemory
         AssertDescription: With TaskCpu 4096, TaskMemory must be 8192-30720.
+
+Mappings:
+  # The AWS-managed prefix list com.amazonaws.global.cloudfront.origin-facing
+  # (CloudFront's addresses towards origins) in each supported Region. There is
+  # no intrinsic that looks it up by name. Keep in step with SupportedRegion.
+  RegionMap:
+    us-east-1:      {CloudFrontPrefixList: pl-3b927c52}
+    us-east-2:      {CloudFrontPrefixList: pl-b6a144df}
+    us-west-1:      {CloudFrontPrefixList: pl-4ea04527}
+    us-west-2:      {CloudFrontPrefixList: pl-82a045eb}
+    ca-central-1:   {CloudFrontPrefixList: pl-38a64351}
+    sa-east-1:      {CloudFrontPrefixList: pl-5da64334}
+    eu-west-1:      {CloudFrontPrefixList: pl-4fa04526}
+    eu-west-2:      {CloudFrontPrefixList: pl-93a247fa}
+    eu-west-3:      {CloudFrontPrefixList: pl-75b1541c}
+    eu-central-1:   {CloudFrontPrefixList: pl-a3a144ca}
+    eu-north-1:     {CloudFrontPrefixList: pl-fab65393}
+    ap-south-1:     {CloudFrontPrefixList: pl-9aa247f3}
+    ap-northeast-1: {CloudFrontPrefixList: pl-58a04531}
+    ap-northeast-2: {CloudFrontPrefixList: pl-22a6434b}
+    ap-southeast-1: {CloudFrontPrefixList: pl-31a34658}
+    ap-southeast-2: {CloudFrontPrefixList: pl-b8a742d1}
 
 Conditions:
   IsDocsAndSql: !Equals [!Ref Mode, DocsAndSql]
@@ -427,13 +453,14 @@ Resources:
       GroupDescription: !Sub ${AWS::StackName} load balancer
       VpcId: !Ref VpcId
       SecurityGroupIngress:
-        # Open to the internet so CloudFront can reach it, but the listener
-        # answers 403 to anything without the CloudFront origin header.
+        # CloudFront's origin-facing addresses only; the listener then also
+        # requires this stack's origin header. The prefix list counts as 55
+        # rules against the security group's inbound-rule quota (default 60).
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
-          CidrIp: 0.0.0.0/0
-          Description: HTTP from CloudFront (origin header enforced by the listener)
+          SourcePrefixListId: !FindInMap [RegionMap, !Ref 'AWS::Region', CloudFrontPrefixList]
+          Description: HTTP from CloudFront only (origin header enforced by the listener)
 
   ServiceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -469,21 +496,25 @@ Resources:
       Port: 8080
       Protocol: HTTP
       TargetType: ip
-      # 503 until the AWS Marketplace subscription is verified, so a task never
-      # receives traffic before it is entitled.
+      # 503 until the AWS Marketplace subscription is verified, so ECS replaces
+      # a task that never gets there. With one target the load balancer fails
+      # open; nginx's own 503 gate keeps an unentitled task from serving.
+      # Document indexing does not affect it: see /ready.
       HealthCheckPath: /health
       HealthCheckIntervalSeconds: 30
       HealthyThresholdCount: 2
       UnhealthyThresholdCount: 3
       Matcher: {HttpCode: '200-399'}
       TargetGroupAttributes:
-        # Turns are acknowledged at once and answered out of band, so in-flight
-        # requests are short and draining does not need the 300 s default.
-        - {Key: deregistration_delay.timeout_seconds, Value: '60'}
+        # Turns are acknowledged at once, but the answer is computed afterwards
+        # in the task that took the turn, and ECS stops an old task as soon as
+        # draining ends. 300 s gives in-flight answers time to finish during a
+        # deployment.
+        - {Key: deregistration_delay.timeout_seconds, Value: '300'}
 
-  # Direct requests to the load balancer get 403. Only requests carrying the
-  # header CloudFront adds, whose value is this stack's unique ID, are
-  # forwarded.
+  # The security group admits CloudFront only. Of those requests, only the ones
+  # carrying the header this stack's distribution adds, whose value is this
+  # stack's unique ID, are forwarded; any other distribution gets 403.
   Listener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
@@ -625,7 +656,9 @@ Resources:
               HTTPPort: 80
               HTTPSPort: 443
               # HTTP to the load balancer inside AWS; viewers and Bot Framework
-              # see CloudFront's certificate.
+              # see CloudFront's certificate. Security Hub control CloudFront.9
+              # flags an http-only origin: accepted, because the load balancer
+              # has no certificate of its own.
               OriginProtocolPolicy: http-only
               OriginSSLProtocols: [TLSv1.2]
               OriginKeepaliveTimeout: 60
@@ -665,13 +698,17 @@ Resources:
       PlatformVersion: LATEST
       DesiredCount: 1
       TaskDefinition: !Ref TaskDefinition
-      # Covers document indexing at start-up before ALB health counts.
+      # Covers image start and the RegisterUsage check before ALB health
+      # counts. Indexing does not delay health, so CREATE_COMPLETE or a finished
+      # deployment does not mean the documents are indexed: /ready says when.
       HealthCheckGracePeriodSeconds: 300
       DeploymentConfiguration:
         MinimumHealthyPercent: 100
         MaximumPercent: 200
         # A task that keeps stopping (for example, not subscribed) fails the
-        # deployment and rolls back instead of retrying for hours.
+        # deployment and rolls back instead of retrying for hours. On the first
+        # creation that rolls back the whole stack, log group included, unless
+        # it was created with --disable-rollback (see the guide, Step 2).
         DeploymentCircuitBreaker:
           Enable: true
           Rollback: true
@@ -704,3 +741,6 @@ Outputs:
     Value: !GetAtt Service.Name
   LogGroupName:
     Value: !Ref LogGroup
+  TaskSecurityGroupId:
+    Description: The task's security group. Allow it on the database port in a database security group in the same VPC.
+    Value: !Ref ServiceSecurityGroup

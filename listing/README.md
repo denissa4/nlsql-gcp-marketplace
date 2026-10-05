@@ -4,9 +4,13 @@ Each file is pasted into one portal field as is. `make listing-check` enforces t
 length and character limits. Before pasting, replace `<commit>` with the commit that
 `make template-url` pins.
 
+Every change below is a request: **Server products → select the product → Request changes**,
+then **Submit**, and it shows on the **Requests** tab. A request locks the product (or the offer)
+until it finishes, so wait for **Succeeded** before the next request on the same one.
+
 ## Product information
 
-**Products → Server products → NLSQL AI Agent → Update product information**
+**Request changes → Update product information**
 
 | Field | Source | Limit |
 |---|---|---|
@@ -28,17 +32,12 @@ Why these replace the draft's texts:
   for Microsoft Teams, and the list of ongoing external services. The long description carries
   both, as do the usage instructions.
 
-## Region availability
+## Regions
 
-**Update region availability**: the 16 Regions the template accepts:
-
-us-east-1, us-east-2, us-west-1, us-west-2, ca-central-1, sa-east-1, eu-west-1, eu-west-2,
-eu-west-3, eu-central-1, eu-north-1, ap-south-1, ap-northeast-1, ap-northeast-2,
-ap-southeast-1, ap-southeast-2.
-
-- Remove ap-east-1 and me-south-1. Not every listed Claude model is a Bedrock global inference
-  profile there, and the template refuses them.
-- Leave future Regions off.
+There is nothing to set in the portal. For container products, "You don't choose Regions" (AWS
+Marketplace Seller Guide, *Regions and countries*): AWS hosts the image in us-east-1, and buyers
+can deploy it in any Region. The template's `SupportedRegion` rule is the only Region control.
+It accepts 16 Regions and names them in its error message.
 
 ## Offer
 
@@ -51,9 +50,13 @@ ap-southeast-1, ap-southeast-2.
 | EULA | Standard Contract for AWS Marketplace (as now) |
 | Refund policy | Replace "30 days notice after deployment - 100% refund" with a clear rule, for example: "Full refund of the first month's fee if you cancel within 30 days of subscribing. Email info@nlsql.com with your AWS account ID." |
 
+Both are under **Request changes → Update public offer**: **Update pricing terms** and **Update
+refund policy**. A price increase locks pricing for 90 days. Raise the placeholder to $99.00
+once, after your own test subscription and before **Update visibility**.
+
 ## Version
 
-**Add new version**:
+**Request changes → Add new version**:
 
 | Field | Value |
 |---|---|

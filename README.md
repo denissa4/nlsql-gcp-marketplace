@@ -119,8 +119,9 @@ at. The load-bearing parts:
 - **Region rule.** `AWS::Region` must be one of 16 Regions: the product's Region availability
   intersected with the Regions where every `LanguageModel` value is a global inference profile.
   Checked with `aws bedrock list-inference-profiles` in each Region on 2026-09-30; ap-east-1 and
-  me-south-1 have no Bedrock endpoint and are excluded. **Re-run the check before each release**,
-  and keep the listing's Regions in the portal equal to this list.
+  me-south-1 have no Bedrock endpoint and are excluded. **Re-run the check before each release.**
+  Container products have no Region setting in the portal, so this rule is the only Region
+  control.
 - **`LanguageModel` values** are global inference-profile IDs, default
   `global.anthropic.claude-opus-5`. `global.anthropic.claude-sonnet-5-5` is included because
   `llama-index-llms-bedrock-converse` 0.15.3 (the pinned minimum) knows its context size and

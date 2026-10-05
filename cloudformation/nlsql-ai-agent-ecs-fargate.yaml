@@ -391,8 +391,8 @@ Resources:
                 - !Ref AWS::NoValue
 
   # The running container's own role, and its only AWS credentials.
-  # RegisterUsage verifies the subscription and meters the task: without it the
-  # container refuses to serve. Bedrock covers the global inference profiles
+  # RegisterUsage verifies the subscription: without it the container refuses
+  # to serve. Bedrock covers the global inference profiles
   # and the foundation models they route to, in any Region.
   TaskRole:
     Type: AWS::IAM::Role
@@ -594,8 +594,8 @@ Resources:
             - {Name: StaticEndPoint,         Value: !Sub 'https://${Distribution.DomainName}'}
             - {Name: connections__serviceConnection__settings__clientId, Value: !Ref MicrosoftAppId}
             - {Name: connections__serviceConnection__settings__tenantId, Value: !Ref MicrosoftAppTenantId}
-            # The image trusts only this code, so editing it does not buy
-            # unmetered use; it can only stop the task.
+            # The image trusts only this code, so editing it cannot run the
+            # product without a subscription; it can only stop the task.
             - {Name: AWS_MARKETPLACE_PRODUCT_CODE, Value: dwcy8qajiorcyvb3gtznytb5g}
             # Unset means both: NLSQL first, documents as the fallback.
             - !If

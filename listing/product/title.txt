@@ -1,0 +1,1 @@
+NLSQL AI Agent for Microsoft Teams: answers from your documents and SQL

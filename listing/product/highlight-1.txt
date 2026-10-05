@@ -1,0 +1,1 @@
+Answers in Microsoft Teams from your company documents in your own Amazon S3 bucket, using Claude on Amazon Bedrock. Reads PDF, Word, Excel, OpenDocument and text files, including files sent in chat.

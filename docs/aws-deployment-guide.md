@@ -116,10 +116,9 @@ in your Microsoft Entra tenant that obtains a token for the bot gets `401`, and 
 
 ## 2. What it costs
 
-The AWS Marketplace software charge is per running ECS task-hour, metered by AWS through
-`RegisterUsage`. The free trial covers the software charge for **one task for 30 days**. It does
-not cover the AWS infrastructure below or Amazon Bedrock usage, which AWS bills to your account
-from the start.
+The AWS Marketplace software charge is a fixed **monthly subscription** (the price is shown on the
+listing). There is no free trial. AWS bills the infrastructure below and Amazon Bedrock usage to
+your account separately, from the start.
 
 Approximate monthly cost of the infrastructure at the defaults, running continuously in
 us-east-1 (730 hours):
@@ -169,8 +168,7 @@ If stack creation fails with a quota error, request an increase and create the s
 ## 3. Before you start
 
 **Subscribe first, and deploy into the same AWS account.** The container calls `RegisterUsage`
-at start-up and stops if the account is not entitled. This is also how AWS meters your hourly
-usage.
+at start-up and stops if the account is not subscribed.
 
 **Pick one supported Region and stay in it.** The template accepts us-east-1, us-east-2,
 us-west-1, us-west-2, ca-central-1, sa-east-1, eu-west-1, eu-west-2, eu-west-3, eu-central-1,

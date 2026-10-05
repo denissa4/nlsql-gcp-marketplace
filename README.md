@@ -27,9 +27,9 @@ Fargate from a CloudFormation template.
 | Product type | Container product |
 | Delivery option | Container image, Amazon ECS on AWS Fargate, CloudFormation template |
 | Supported services (portal) | **ECS** only. Fargate is part of ECS; do not tick EKS, since no EKS deployment is shipped |
-| Pricing | hourly, per Amazon ECS task (metered to the second, billed per hour) |
-| Free trial | 30 days, covering one running task |
-| Entitlement and metering | `RegisterUsage`, called once per task from inside the image, fail-closed |
+| Pricing | fixed monthly subscription, **$99 per month** (offer `offer-kqidah5l5ufi2`, `RecurringPaymentTerm`) |
+| Free trial | none (AWS offers container free trials with hourly pricing only) |
+| Entitlement | `RegisterUsage`, called once per task from inside the image, fail-closed |
 | Architecture | **linux/amd64** only: `msodbcsql17` (SQL Server driver) has no arm64 build for Debian 13. Marketplace itself accepts arm64 |
 | Container port | 8080; the container runs as uid 10001 |
 | Public endpoint | CloudFront (HTTPS, default certificate) in front of an HTTP load balancer that rejects direct requests |
@@ -54,7 +54,8 @@ docs/aws-deployment-guide.md                     buyer guide the usage instructi
 listing/usage-instructions.txt                   Add new version: usage instructions (<= 4000)
 listing/delivery-option-description.txt          Add new version: delivery option description (< 1000)
 listing/release-notes/<version>.md               Add new version: version title and release notes
-listing/product-description-additions.md         Update product information: required disclosures
+listing/README.md                                 which file goes into which portal field
+listing/product/                                  Update product information: title, descriptions, highlights, keywords, support
 teams/                                           Teams manifest template, placeholder icons
 scripts/deploy-test.sh, destroy-test.sh          seller-account test stack
 scripts/e2e-test.py                              end-to-end test of that stack, the way Teams drives it
@@ -70,8 +71,8 @@ Load Balancer and a CloudFront distribution, in a VPC and subnets the buyer alre
 optional private documents bucket. It is what the listing's **Deployment templates** entry points
 at. The load-bearing parts:
 
-- **The task role grants `aws-marketplace:RegisterUsage`.** Under hourly pricing that call is the
-  billing path, not only an entitlement check. The image strips every other credential and
+- **The task role grants `aws-marketplace:RegisterUsage`.** AWS requires that call for monthly as
+  well as hourly pricing: it verifies at start-up that the account is subscribed. The image strips every other credential and
   endpoint source (`AWS_ENDPOINT_URL*`, static keys, profiles, proxies, CA bundles) before it
   calls, pins the regional metering endpoint, and verifies the returned signature against the
   baked key with a nonce bound to the task ARN. A definitive refusal (not subscribed, access
@@ -82,7 +83,7 @@ at. The load-bearing parts:
   new task and a new `RegisterUsage` call, no exit 78). The bot, NLSQL and the document service
   each refuse to serve until they have verified the signature themselves.
 - **`AWS_MARKETPLACE_PRODUCT_CODE`** may only repeat the baked code. Editing it in a downloaded
-  template stops the task instead of buying unmetered use.
+  template stops the task instead of running it without a subscription.
 - **`ImageUri` has an `AllowedPattern`** that accepts only
   `709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-agent:<x.y.z>`. The test scripts deploy a
   temporary copy that also accepts a private test repository.
@@ -166,7 +167,7 @@ Validate any change before publishing: `make validate`.
      `listing/delivery-option-description.txt`;
    - usage instructions from `listing/usage-instructions.txt`, with `<commit>` replaced;
    - **Deployment templates**: the pinned `raw.githubusercontent.com` template URL.
-6. For the first version, also apply `listing/product-description-additions.md` under **Update
+6. For the first version, also apply `listing/product/` (see `listing/README.md`) under **Update
    product information**.
 
 Repository names in the Marketplace registry are permanent and unique across the seller's
@@ -237,12 +238,10 @@ Sonnet 4.6 was enabled there and Claude Opus 5 (the template default) was not.
 
 ## Outstanding before submission
 
-- [ ] The real hourly price and the free trial (1 task, 30 days) on the product's offer, which
-      is still Draft with no price.
-- [ ] Apply `listing/product-description-additions.md`: the add-on sentence, the external services
-      list (with the Azure subscription and cdn.plot.ly), and replacements for the highlight and
-      short description, which still promise Azure infrastructure and a website assistant this
-      listing does not deliver.
+- [ ] Set the offer's price to $99.00 per month (it carries a $0.001 placeholder) and a clear
+      refund policy (`listing/README.md`).
+- [ ] Apply `listing/product/` under Update product information (`listing/README.md`): title,
+      descriptions with the required disclosures, highlights, keywords and support text.
 - [ ] Portal Regions equal to the template's Region rule (16 Regions).
 - [x] Test stack in us-east-1, entitled run (T1): `RegisterUsage` verified on the seller account
       (2026-09-30).

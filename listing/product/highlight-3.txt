@@ -1,0 +1,1 @@
+Runs in your AWS account from one CloudFormation template on Amazon ECS with AWS Fargate: no AWS access keys, credentials in AWS Secrets Manager, your documents and data stay in your account.

@@ -1,0 +1,1 @@
+Ask your SQL database in plain language: Microsoft SQL Server, MySQL, PostgreSQL, Amazon Redshift and Snowflake, answered with tables and charts (DocsAndSql mode).

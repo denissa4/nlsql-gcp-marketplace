@@ -42,7 +42,7 @@ DOCS_EXPECT ?=
 LISTING_USAGE    := listing/usage-instructions.txt
 LISTING_DELIVERY := listing/delivery-option-description.txt
 LISTING_NOTES    := listing/release-notes/$(VERSION).md
-LISTING_DESC     := listing/product-description-additions.md
+LISTING_PRODUCT  := listing/product
 
 .PHONY: help
 help:
@@ -150,7 +150,11 @@ template-url: ## Print the commit-pinned template and guide URLs for the listing
 .PHONY: listing-check
 listing-check: ## Enforce Marketplace length and character limits on listing texts
 	@python3 scripts/listing-check.py \
-	  $(LISTING_USAGE):4000 $(LISTING_DELIVERY):999 $(LISTING_NOTES):29999 $(LISTING_DESC):0
+	  $(LISTING_USAGE):4000 $(LISTING_DELIVERY):999 $(LISTING_NOTES):29999 \
+	  $(LISTING_PRODUCT)/title.txt:72 $(LISTING_PRODUCT)/short-description.txt:1000 \
+	  $(LISTING_PRODUCT)/long-description.txt:5000 $(LISTING_PRODUCT)/support-description.txt:2000 \
+	  $(LISTING_PRODUCT)/highlight-1.txt:250 $(LISTING_PRODUCT)/highlight-2.txt:250 \
+	  $(LISTING_PRODUCT)/highlight-3.txt:250 $(LISTING_PRODUCT)/keywords.txt:keywords
 
 # Credential-shaped strings, and AWS account IDs other than the Marketplace
 # registry's and documentation placeholders, must never reach this public

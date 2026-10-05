@@ -1,0 +1,30 @@
+NLSQL AI Agent puts a knowledgeable assistant into Microsoft Teams. Your colleagues ask questions in plain language in a chat with the bot, and it answers from your company documents and, in DocsAndSql mode, from your SQL database.
+
+WHAT IT DOES
+- Document answers: the documents in your Amazon S3 bucket are indexed when the agent starts, and each question is answered by Claude on Amazon Bedrock from the most relevant passages. Supported formats: PDF, Word (.docx, tables included), Excel (.xlsx, every worksheet), OpenDocument (.odt, .ods) and text files (.txt, .csv, .md, .json, .html).
+- Files in chat: send a file to the bot in a personal chat and ask about it directly.
+- Data answers (DocsAndSql mode, the default): the NLSQL service turns a question about your data into SQL, which the agent runs against your Microsoft SQL Server, MySQL, PostgreSQL, Amazon Redshift or Snowflake database and answers with text, tables and charts. Questions that are not about the data are answered from the documents. DocsOnly mode needs no database.
+- Your choice of Claude model on Amazon Bedrock: Claude Opus 5 (default), Opus 5.5, Opus 4.8, Sonnet 5, Sonnet 5.5, Sonnet 4.6 or Haiku 4.5.
+
+HOW IT RUNS
+One AWS CloudFormation template creates everything in your AWS account: one AWS Fargate task on Amazon ECS, an Application Load Balancer that accepts traffic only from the stack's own Amazon CloudFront distribution, and the CloudFront HTTPS endpoint you register as your Microsoft Teams bot's messaging endpoint. The template creates a private, encrypted S3 bucket for your documents, or uses one you name.
+
+SECURITY AND DATA
+- Your documents and your database stay in your AWS account and network. In DocsAndSql mode the NLSQL service receives the text of each question, and never your documents, query results or credentials.
+- The bot's client secret, the NLSQL API token and the database password are read from one AWS Secrets Manager secret and are never written to the task definition or the logs.
+- AWS services are called only through the task's IAM role, with least-privilege permissions. No AWS access keys are used.
+- The container runs as a non-root user on Debian 13 and Python 3.13, and verifies your AWS Marketplace subscription at start-up before it accepts any traffic.
+- Claude is called through Amazon Bedrock global cross-Region inference, which may process prompts in any commercial AWS Region.
+
+WHAT YOU NEED
+- An AWS account subscribed to this product, with access enabled in Amazon Bedrock to the Claude model you choose.
+- Microsoft Teams, and a Microsoft Azure subscription for the Azure Bot resource that connects Teams to the agent (the standard Microsoft Teams channel is free).
+- For DocsAndSql mode: a database the agent can reach, and a free NLSQL API token, created self-service at https://nlsql.com.
+- A VPC with two public subnets in different Availability Zones.
+
+PRICING
+A fixed monthly subscription for the software. AWS infrastructure (AWS Fargate, Elastic Load Balancing, Amazon CloudFront, Amazon S3 and others) and Amazon Bedrock usage are billed to your AWS account separately. Microsoft Teams licences and the Azure subscription are your own.
+
+This product requires an ongoing internet connection. The following ongoing external services are required to properly function: AWS Marketplace Metering Service, Amazon Bedrock, Amazon S3, AWS Secrets Manager, Amazon CloudWatch Logs, Amazon ECR, Microsoft Entra ID, Microsoft Azure Bot Service (Bot Connector), Microsoft Teams and SharePoint file hosts (files sent to the bot), cdn.plot.ly (map charts only) and, in DocsAndSql mode only, api.nlsql.com (question text only).
+
+This product extends the functionality of Microsoft Teams and without it, this product has very limited utility. Please note that Microsoft Teams might require its own license for full functionality with this listing.

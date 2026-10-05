@@ -1,0 +1,13 @@
+Microsoft Teams
+AI agent
+AI assistant
+chat with documents
+RAG
+text to SQL
+natural language to SQL
+Amazon Bedrock
+Claude
+knowledge base
+business intelligence
+document Q&A
+NLSQL

@@ -8,3 +8,5 @@ docs/GCP-costs-estimate.csv
 docs/google-solution-validation-response.txt
 docs/NLSQL-technical-GCP-architecture.pdf
 .env
+service-account-key.yaml
+

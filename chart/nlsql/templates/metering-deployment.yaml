@@ -36,8 +36,7 @@ spec:
     type: Recreate
   selector:
     matchLabels:
-      {{- include "nlsql.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: metering
+      {{- include "nlsql.meteringSelectorLabels" . | nindent 6 }}
   template:
     metadata:
       annotations:
@@ -45,8 +44,10 @@ spec:
         name, unit or interval must reach the running process. */}}
         checksum/ubbagent: {{ include (print $.Template.BasePath "/ubbagent-configmap.yaml") . | sha256sum }}
       labels:
-        {{- include "nlsql.labels" . | nindent 8 }}
+        {{- include "nlsql.meteringSelectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: metering
+        app.kubernetes.io/managed-by: {{ .Release.Service }}
+        helm.sh/chart: {{ include "nlsql.chart" . }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

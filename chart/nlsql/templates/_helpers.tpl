@@ -84,3 +84,17 @@ same digest-over-tag rule as the app image.
 {{- printf "%s:%s" .Values.ubbagent.image.repo (.Values.ubbagent.image.tag | toString) }}
 {{- end }}
 {{- end }}
+
+{{/*
+Selector labels for the metering agent.
+
+These MUST differ from nlsql.selectorLabels. The application's Service selects on
+name+instance alone, so a metering Pod carrying those is adopted as a Service
+backend: on GKE it then inherits the Ingress NEG readiness gate, can never report
+healthy on port 80 (it serves nothing), and sits at 0/1 Ready forever while
+working perfectly. A distinct name keeps the two apart.
+*/}}
+{{- define "nlsql.meteringSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "nlsql.name" . }}-metering
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}

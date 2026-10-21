@@ -13,7 +13,7 @@ image:
   repo: us-docker.pkg.dev/nlsql-public/nlsql/nlsql
   # -- Image tag. Cloud Marketplace substitutes the release tag (schema.yaml type TAG).
   # For CLI installs, prefer pinning by digest instead - see `image.digest`.
-  tag: "1.9.0"
+  tag: "1.10.0"
   # -- Optional immutable digest, e.g. "sha256:abc123...". When set it takes precedence
   # over `image.tag`. Cloud Marketplace requires documented installs to pin by digest.
   digest: ""
@@ -36,6 +36,17 @@ serviceAccount:
 
 podAnnotations: {}
 podLabels: {}
+
+# Cloud Marketplace consumption tracking label. Google reads `goog-partner-solution`
+# from the Pod labels to attribute a customer's Google Cloud consumption to this
+# product. The value is this listing's solution URN, from Producer Portal >
+# Overview > "Consumption tracking label".
+#
+# This is a property of the listing, not of the customer's deployment, so it is
+# deliberately absent from schema.yaml - a buyer must not be able to change or
+# clear it. Google's documentation also requires every Pod carrying the label to
+# declare `resources`, which both Deployments here do.
+consumptionTrackingLabel: isol_plb32_0014m00002rsjmaqa1_ofumk4qn54cgb5q5tzbrrefncvbnfyuw
 
 podSecurityContext:
   runAsNonRoot: false
@@ -296,6 +307,6 @@ metering:
 ubbagent:
   image:
     repo: us-docker.pkg.dev/nlsql-public/nlsql/ubbagent
-    tag: "1.9.0"
+    tag: "1.10.0"
     digest: ""
     pullPolicy: IfNotPresent

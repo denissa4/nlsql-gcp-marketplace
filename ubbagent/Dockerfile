@@ -22,7 +22,11 @@
 # a freshly upgraded Alpine - exactly what deployer/Dockerfile does for helm and
 # kubectl, for the same Go stdlib CVE.
 
-ARG GO_VERSION=1.26.8
+# 1.26.9 for release 1.10.0: 1.26.8 carries CVE-2026-56857 and CVE-2026-78663
+# (both critical) plus CVE-2026-56866/78659/78660/78667/78669/94439/94440/94444/
+# 94447/97031/97032, all fixed in the 1.26.9 stdlib. The gate at the end of the
+# build stage asserts the binary really was linked against it.
+ARG GO_VERSION=1.26.9
 ARG UBBAGENT_VERSION=0.2.13
 # The commit that tag pointed at when this was written. Pinning both means a
 # moved tag fails the build instead of silently changing what we ship - and the

@@ -86,6 +86,23 @@ same digest-over-tag rule as the app image.
 {{- end }}
 
 {{/*
+Cloud Marketplace consumption tracking label.
+
+Goes on Pod templates only - never in a selector. Both Deployments select on
+their own name+instance labels, and adding a key to a selector on an existing
+install is rejected by the API server as an immutable-field change.
+
+Renders nothing when the value is empty, so a chart installed without it stays
+valid rather than emitting `goog-partner-solution: ""`, which Kubernetes accepts
+but Google cannot attribute.
+*/}}
+{{- define "nlsql.consumptionLabels" -}}
+{{- with .Values.consumptionTrackingLabel }}
+goog-partner-solution: {{ . | quote }}
+{{- end }}
+{{- end }}
+
+{{/*
 Selector labels for the metering agent.
 
 These MUST differ from nlsql.selectorLabels. The application's Service selects on

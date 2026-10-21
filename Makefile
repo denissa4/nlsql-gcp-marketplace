@@ -22,7 +22,7 @@ ANNOTATION = com.googleapis.cloudmarketplace.product.service.name=services/$(SER
 #    version. For example, if you're releasing version 2.0.5 on the 2.0 release
 #    track, all the images must be tagged with 2.0 and 2.0.5."
 # https://docs.cloud.google.com/marketplace/docs/partners/kubernetes/create-app-package
-VERSION ?= 1.9.0
+VERSION ?= 1.10.0
 # Release track = the MAJOR.MINOR prefix of VERSION, derived so the two cannot drift.
 TRACK   := $(basename $(VERSION))
 
@@ -244,11 +244,19 @@ scan: ## Fail if any published image has a fixable CRITICAL/HIGH vulnerability
 	@# `discovery_summary` is what says whether a scan happened; a clean image
 	@# has NO package_vulnerability_summary at all, so that field's absence must
 	@# never be read as "not scanned yet" - it usually means the opposite.
+	@#
+	@# gcloud's exit status is checked before its output is parsed. Piping it
+	@# with 2>/dev/null used to swallow an expired-credential error and hand the
+	@# parser an empty string, which surfaced as "NOT SCANNED" on every image -
+	@# an auth problem reported as a product problem.
 	@set -e; rc=0; for img in $(ALL_IMAGES); do \
 	  echo "--- $$img:$(VERSION) ---"; \
-	  gcloud artifacts docker images describe $$img:$(VERSION) \
-	    --show-all-metadata --format=json 2>/dev/null \
-	  | $(PYTHON) -c "import json,sys; \
+	  out=$$(gcloud artifacts docker images describe $$img:$(VERSION) \
+	    --show-all-metadata --format=json 2>&1) \
+	  || { echo "  GCLOUD FAILED - this is not a scan result:"; \
+	       printf '%s\n' "$$out" | head -3 | sed 's/^/    /'; \
+	       rc=1; gcloudfail=1; continue; }; \
+	  printf '%s' "$$out" | $(PYTHON) -c "import json,sys; \
 	      raw=sys.stdin.read().strip(); \
 	      d=json.loads(raw) if raw else {}; \
 	      disc=[o.get('discovery',{}) for o in (d.get('discovery_summary') or {}).get('discovery',[])]; \
@@ -277,6 +285,7 @@ scan: ## Fail if any published image has a fixable CRITICAL/HIGH vulnerability
 	test $$rc -eq 0 || { echo ""; \
 	  test -z "$$found"  || echo "FAIL: fixable CRITICAL/HIGH findings remain - Marketplace will reject this"; \
 	  test -z "$$nodata" || echo "FAIL: some images have no usable scan result - see above"; \
+	  test -z "$$gcloudfail" || echo "FAIL: could not read image metadata at all - run 'gcloud auth login' and check the repository path. This says nothing about the images."; \
 	  exit 1; }
 	@echo "no fixable critical/high vulnerabilities in any published image"
 

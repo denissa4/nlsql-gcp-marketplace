@@ -201,7 +201,7 @@ Set the identity of this install:
 ```shell
 export APP_INSTANCE_NAME=nlsql-1
 export NAMESPACE=nlsql
-export TAG=1.9.0
+export TAG=1.10.0
 ```
 
 Set the connection details for your database and NLSQL account:
@@ -404,7 +404,7 @@ if you set `credentials.existingSecret` instead — the recommended path above.
 | `nlsql.ApiEndPoint` | `https://api.nlsql.com/googlesheet` | NLSQL API endpoint for your channel |
 | `replicaCount` | `1` | Number of NLSQL pods |
 | `image.repo` | `us-docker.pkg.dev/nlsql-public/nlsql/nlsql` | Image repository including registry |
-| `image.tag` | `1.9.0` | Image tag; ignored when `image.digest` is set |
+| `image.tag` | `1.10.0` | Image tag; ignored when `image.digest` is set |
 | `image.digest` | `""` | Immutable `sha256:...` digest — preferred |
 | `image.pullPolicy` | `IfNotPresent` | |
 
@@ -474,7 +474,7 @@ kubectl get cm "${APP_INSTANCE_NAME}-nlsql-ubbagent" --namespace "$NAMESPACE" \
   -o jsonpath='{.data.config\.yaml}' | head -20
 ```
 | `ubbagent.image.repo` | `us-docker.pkg.dev/nlsql-public/nlsql/ubbagent` | Metering agent image |
-| `ubbagent.image.tag` | `1.9.0` | Metering agent tag; ignored when `ubbagent.image.digest` is set |
+| `ubbagent.image.tag` | `1.10.0` | Metering agent tag; ignored when `ubbagent.image.digest` is set |
 
 Usage reporting is only as good as the agent behind it, so check it rather than
 assuming. The agent logs each report it accepts and each one it sends:
@@ -668,7 +668,7 @@ kubectl get application "$APP_INSTANCE_NAME" --namespace "$NAMESPACE" \
 Resolve the digest of the new tag:
 
 ```shell
-export NEW_TAG=1.9.0
+export NEW_TAG=1.10.0
 
 export NEW_DIGEST=$(gcloud artifacts docker images describe "${IMAGE_REPO}:${NEW_TAG}" \
   --format='value(image_summary.digest)')
@@ -875,10 +875,10 @@ Every image must carry **two** tags. Google's requirement:
 > track, all the images must be tagged with `2.0` and `2.0.5`.
 
 `TRACK` is the `MAJOR.MINOR` prefix of `VERSION`, derived in the Makefile so the
-two cannot drift. This release is **1.9.0 on track 1.9**; cut a new one with:
+two cannot drift. This release is **1.10.0 on track 1.10**; cut a new one with:
 
 ```shell
-make promote-image ubbagent-image deployer-image VERSION=1.10.0  # TRACK becomes 1.10
+make promote-image ubbagent-image deployer-image VERSION=1.11.0  # TRACK becomes 1.11
 ```
 
 `schema.yaml`'s `publishedVersion` must equal the chart's `appVersion` —

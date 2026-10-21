@@ -45,6 +45,7 @@ spec:
         checksum/ubbagent: {{ include (print $.Template.BasePath "/ubbagent-configmap.yaml") . | sha256sum }}
       labels:
         {{- include "nlsql.meteringSelectorLabels" . | nindent 8 }}
+        {{- include "nlsql.consumptionLabels" . | nindent 8 }}
         app.kubernetes.io/component: metering
         app.kubernetes.io/managed-by: {{ .Release.Service }}
         helm.sh/chart: {{ include "nlsql.chart" . }}

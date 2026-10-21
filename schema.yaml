@@ -2,16 +2,22 @@ x-google-marketplace:
   schemaVersion: v2
   applicationApiVersion: v1beta1
 
-  # Must match chart/nlsql/Chart.yaml `appVersion`. Release 1.10.0 sits on the 1.10
+  # Must match chart/nlsql/Chart.yaml `appVersion`. Release 2.0.0 sits on the 2.0
   # release track, and every image is tagged with both - see README.md.
-  publishedVersion: "1.10.0"
+  publishedVersion: "2.0.0"
   publishedVersionMetadata:
     releaseNote: >-
+      Security release. Clears every fixable critical and high severity
+      vulnerability in all three images: the Go standard library in the deployer
+      and metering agent moves to 1.26.9, and the application's PyJWT, Pillow,
+      certifi and aiohttp dependencies are updated. No configuration changes and
+      no breaking changes - the major version reflects the release track only.
+
       NLSQL on Google Kubernetes Engine. Connects to your existing MSSQL, MySQL,
       PostgreSQL, Oracle or Snowflake database and answers plain-English questions
       with SQL results.
     releaseTypes:
-      - Feature
+      - Security
     recommended: true
 
   images:

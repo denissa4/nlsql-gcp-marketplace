@@ -1,0 +1,101 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.19",
+  "version": "1.0.0",
+  "id": "<MicrosoftAppId>",
+  "developer": {
+    "name": "NLSQL",
+    "websiteUrl": "https://nlsql.com",
+    "privacyUrl": "https://nlsql.com/privacy_policy",
+    "termsOfUseUrl": "https://nlsql.com/terms_of_use"
+  },
+  "name": {
+    "short": "NLSQL AI Employee",
+    "full": "NLSQL AI Employee: your AI assistant in Microsoft Teams"
+  },
+  "description": {
+    "short": "Your AI assistant for email, calendar, files and scheduled tasks in Teams.",
+    "full": "NLSQL AI Employee is an AI assistant in Microsoft Teams that runs in your own AWS account, with Claude on Amazon Bedrock. Sign in to Microsoft 365 and it works with your mail, calendar and OneDrive files. It runs scheduled tasks, sends a daily morning briefing, and can watch for important email and upcoming meetings. Send it a file in a personal chat to ask questions about that file. With the optional Gemini features it can also browse the web for you, in a live browser you can watch and take over, and read images."
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "accentColor": "#438AFF",
+  "bots": [
+    {
+      "botId": "<MicrosoftAppId>",
+      "scopes": [
+        "personal"
+      ],
+      "supportsFiles": true,
+      "isNotificationOnly": false,
+      "commandLists": [
+        {
+          "scopes": [
+            "personal"
+          ],
+          "commands": [
+            {
+              "title": "/help",
+              "description": "What I can do, and the commands"
+            },
+            {
+              "title": "login",
+              "description": "Sign in to Microsoft 365 so I can use your mail, calendar and OneDrive"
+            },
+            {
+              "title": "refresh",
+              "description": "Wipe our conversation history and start fresh"
+            },
+            {
+              "title": "/schedule",
+              "description": "Schedule a task, e.g. /schedule email me a joke every Friday at 4pm"
+            },
+            {
+              "title": "/tasks",
+              "description": "List your scheduled tasks, briefings and watches"
+            },
+            {
+              "title": "/memory",
+              "description": "Show what I've saved to long-term memory"
+            },
+            {
+              "title": "/briefing",
+              "description": "Daily morning briefing: calendar, inbox highlights and due tasks. /briefing [HH:MM UTC | off]"
+            },
+            {
+              "title": "/watch",
+              "description": "Alerts for important email and meeting-prep briefs. /watch [emails|meetings] [on|off]"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "staticTabs": [
+    {
+      "entityId": "conversations",
+      "scopes": [
+        "personal"
+      ]
+    },
+    {
+      "entityId": "browser-use",
+      "name": "Browser-Use",
+      "contentUrl": "https://<CloudFrontDomain>/vnc/",
+      "scopes": [
+        "personal"
+      ]
+    }
+  ],
+  "permissions": [
+    "identity",
+    "messageTeamMembers"
+  ],
+  "validDomains": [
+    "<CloudFrontDomain>"
+  ],
+  "showLoadingIndicator": false,
+  "isFullScreen": false
+}

@@ -79,7 +79,7 @@ template-invariants: ## Offline: env names, path allowlist, key schema, Regions,
 	  $(call with-cfn-lint,python3 scripts/template-invariants.py --template $(TEMPLATE) $(APP_ARG))
 
 .PHONY: test-scripts
-test-scripts: ## Offline unit tests of scripts/ (each template invariant fails on a planted defect)
+test-scripts: ## Offline unit tests: template invariants (each fails on a planted defect), teams/build-package.sh
 	@$(call with-cfn-lint,$(if $(APP_ARG),APP_REPO=$(APP_REPO) )python3 -m unittest discover -s scripts -p "test_*.py")
 
 .PHONY: validate

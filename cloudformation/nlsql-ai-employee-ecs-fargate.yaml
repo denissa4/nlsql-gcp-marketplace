@@ -1,0 +1,876 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  NLSQL AI Employee on Amazon ECS (Fargate). Deployment template for the AWS
+  Marketplace container product. Creates one Fargate task behind an Application
+  Load Balancer and a CloudFront HTTPS endpoint for your Azure Bot (Microsoft
+  Teams and the other Bot Service channels), in subnets you already have, with
+  Amazon Bedrock (Claude) through the task role and DynamoDB tables and S3
+  buckets for your users' data. Google Gemini features are optional, with your
+  own key.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: {default: Network}
+        Parameters: [VpcId, SubnetIds, AssignPublicIp, TaskSubnetIds]
+      - Label: {default: Azure Bot and Microsoft 365 sign-in}
+        Parameters: [MicrosoftAppId, MicrosoftAppTenantId]
+      - Label: {default: Credentials (AWS Secrets Manager)}
+        Parameters: [CredentialsSecretArn, KmsKeyArn]
+      - Label: {default: Language model (Amazon Bedrock)}
+        Parameters: [LanguageModel, ConversationMemoryTokens, Streaming, AdditionalInstructions]
+      - Label: {default: 'Optional: browser agent and image reading (Google Gemini)'}
+        Parameters: [GeminiFeatures, GeminiModel]
+      - Label: {default: Sizing}
+        Parameters: [TaskCpu, TaskMemory, EphemeralStorage]
+      - Label: {default: Image}
+        Parameters: [ImageUri]
+    ParameterLabels:
+      VpcId: {default: VPC}
+      SubnetIds: {default: Subnets}
+      AssignPublicIp: {default: Assign public IP to the task}
+      TaskSubnetIds: {default: Private task subnets (optional)}
+      MicrosoftAppId: {default: Microsoft App ID}
+      MicrosoftAppTenantId: {default: Microsoft Entra tenant ID}
+      CredentialsSecretArn: {default: Credentials secret ARN}
+      KmsKeyArn: {default: Customer managed KMS key ARN (optional)}
+      LanguageModel: {default: Claude model}
+      ConversationMemoryTokens: {default: Conversation memory (tokens)}
+      Streaming: {default: Stream answers}
+      AdditionalInstructions: {default: Additional instructions (optional)}
+      GeminiFeatures: {default: Gemini features}
+      GeminiModel: {default: Gemini model}
+      TaskCpu: {default: Task CPU units}
+      TaskMemory: {default: Task memory (MiB)}
+      EphemeralStorage: {default: Task ephemeral storage (GiB)}
+      ImageUri: {default: Image URI}
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to deploy into.
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: >-
+      Two or more public subnets in different Availability Zones. The load
+      balancer is internet-facing, and the task needs outbound internet access.
+  AssignPublicIp:
+    Type: String
+    Default: ENABLED
+    AllowedValues: [ENABLED, DISABLED]
+    Description: >-
+      Keep ENABLED: the task reaches the internet through the public subnets'
+      internet gateway. DISABLED only if those subnets give it another way out.
+      Ignored when TaskSubnetIds is set.
+  TaskSubnetIds:
+    Type: CommaDelimitedList
+    Default: ''
+    Description: >-
+      Optional. Private subnets (routed through a NAT gateway) for the task: a
+      fixed egress IP address, and the task and its browser kept out of the
+      public subnets. The load balancer stays in SubnetIds. Use subnets of the
+      same VPC, only in Availability Zones that also have one of SubnetIds: the
+      load balancer cannot reach a task in any other zone. Empty runs the task
+      in SubnetIds with a public IP, which changes at every deployment.
+
+  MicrosoftAppId:
+    Type: String
+    AllowedPattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    ConstraintDescription: must be a GUID.
+    Description: >-
+      Application (client) ID of your single-tenant Azure Bot. The same app
+      registration is the Microsoft 365 sign-in client and the Teams app ID.
+  MicrosoftAppTenantId:
+    Type: String
+    AllowedPattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    ConstraintDescription: must be a GUID.
+    Description: Microsoft Entra tenant ID the bot is registered in.
+
+  CredentialsSecretArn:
+    Type: String
+    AllowedPattern: '^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+$'
+    ConstraintDescription: must be the full ARN of a Secrets Manager secret.
+    Description: >-
+      Full ARN of a Secrets Manager secret in this Region, with JSON key
+      AppPassword (the bot's client secret) and, with GeminiFeatures Enabled,
+      GeminiApiKey (your Google Gemini API key).
+  KmsKeyArn:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/[0-9a-fA-F-]+$'
+    ConstraintDescription: must be empty or a KMS key ARN.
+    Description: >-
+      Leave empty unless the credentials secret is encrypted with a customer
+      managed KMS key. ECS is then allowed to decrypt that secret with it.
+
+  # The default first. Each value needs the image's per-model test
+  # (tests/unit/test_bedrock_models.py, which template-invariants compares)
+  # and must be a global inference profile in every SupportedRegion.
+  LanguageModel:
+    Type: String
+    Default: global.anthropic.claude-sonnet-5-5
+    AllowedValues:
+      - global.anthropic.claude-sonnet-5-5
+      - global.anthropic.claude-opus-5
+      - global.anthropic.claude-opus-5-5
+      - global.anthropic.claude-opus-4-8
+      - global.anthropic.claude-sonnet-5
+      - global.anthropic.claude-sonnet-4-6
+      - global.anthropic.claude-haiku-4-5-20251001-v1:0
+    Description: >-
+      Claude model, as an Amazon Bedrock global inference profile. Enable it in
+      Amazon Bedrock in this account before launching.
+  ConversationMemoryTokens:
+    Type: String
+    Default: '8000'
+    AllowedValues: ['8000', '16000', '32000', '64000']
+    Description: >-
+      How much of each user's conversation the model sees. Older messages are
+      summarized. More tokens cost more per answer.
+  Streaming:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['false', 'true']
+    Description: Stream answers into the chat as they are generated.
+  AdditionalInstructions:
+    Type: String
+    Default: ''
+    MaxLength: 4000
+    Description: Optional. Added to the built-in system prompt, for every user.
+
+  GeminiFeatures:
+    Type: String
+    Default: Disabled
+    AllowedValues: [Disabled, Enabled]
+    Description: >-
+      Enabled turns on the browser agent (with its live view) and image
+      reading, which call Google Gemini with your own key: the credentials
+      secret must then hold GeminiApiKey. Disabled offers neither, and nothing
+      is sent to Google.
+  GeminiModel:
+    Type: String
+    Default: gemini-3.8-flash
+    AllowedValues: [gemini-3.8-flash, gemini-3.6-flash, gemini-3.5-flash-lite]
+    Description: Gemini model for the browser agent and image reading. Used only with GeminiFeatures Enabled.
+
+  TaskCpu:
+    Type: String
+    Default: '2048'
+    AllowedValues: ['2048', '4096']
+    Description: >-
+      Fargate CPU units. 2048 (2 vCPU) runs 4 live browsers at 8192 MiB. With
+      4096, a deployment stops the running task before it starts the new one (a
+      short outage), because two 4 vCPU tasks exceed the default Fargate quota
+      of 6 vCPU.
+  TaskMemory:
+    Type: String
+    Default: '8192'
+    AllowedValues: ['4096', '5120', '6144', '7168', '8192', '9216', '10240', '11264', '12288',
+                    '13312', '14336', '15360', '16384', '17408', '18432', '19456', '20480',
+                    '21504', '22528', '23552', '24576', '25600', '26624', '27648', '28672',
+                    '29696', '30720']
+    Description: Fargate memory in MiB. 2048 CPU takes 4096-16384; 4096 CPU takes 8192-30720.
+  EphemeralStorage:
+    Type: Number
+    Default: 40
+    MinValue: 30
+    MaxValue: 200
+    Description: Task disk in GiB. The image counts against it; holds users' uploads and browser sessions.
+
+  ImageUri:
+    Type: String
+    Default: 709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee:1.0.0
+    AllowedPattern: '^709825985650\.dkr\.ecr\.us-east-1\.amazonaws\.com/nlsql/ai-employee:[0-9]+\.[0-9]+\.[0-9]+$'
+    ConstraintDescription: must be a published NLSQL AI Employee image from AWS Marketplace.
+    Description: The AWS Marketplace image. Keep the default unless you are pinning another published version.
+
+Rules:
+  # Regions where the product is offered and every LanguageModel value is a
+  # Bedrock global inference profile. Keep in step with RegionMap and the
+  # listing's Regions (template-invariants compares the first two).
+  SupportedRegion:
+    Assertions:
+      - Assert:
+          Fn::Contains:
+            - [us-east-1, us-east-2, us-west-1, us-west-2, ca-central-1, sa-east-1,
+               eu-west-1, eu-west-2, eu-west-3, eu-central-1, eu-north-1,
+               ap-south-1, ap-northeast-1, ap-northeast-2, ap-southeast-1, ap-southeast-2]
+            - !Ref AWS::Region
+        AssertDescription: >-
+          NLSQL AI Employee is not supported in this Region. Use us-east-1,
+          us-east-2, us-west-1, us-west-2, ca-central-1, sa-east-1, eu-west-1,
+          eu-west-2, eu-west-3, eu-central-1, eu-north-1, ap-south-1,
+          ap-northeast-1, ap-northeast-2, ap-southeast-1 or ap-southeast-2.
+
+  # Valid Fargate CPU/memory pairs.
+  MemoryFor2048Cpu:
+    RuleCondition: !Equals [!Ref TaskCpu, '2048']
+    Assertions:
+      - Assert:
+          Fn::Contains:
+            - ['4096', '5120', '6144', '7168', '8192', '9216', '10240', '11264', '12288',
+               '13312', '14336', '15360', '16384']
+            - !Ref TaskMemory
+        AssertDescription: With TaskCpu 2048, TaskMemory must be 4096-16384.
+  MemoryFor4096Cpu:
+    RuleCondition: !Equals [!Ref TaskCpu, '4096']
+    Assertions:
+      - Assert:
+          Fn::Contains:
+            - ['8192', '9216', '10240', '11264', '12288', '13312', '14336', '15360', '16384',
+               '17408', '18432', '19456', '20480', '21504', '22528', '23552', '24576',
+               '25600', '26624', '27648', '28672', '29696', '30720']
+            - !Ref TaskMemory
+        AssertDescription: With TaskCpu 4096, TaskMemory must be 8192-30720.
+
+Mappings:
+  # The AWS-managed prefix list com.amazonaws.global.cloudfront.origin-facing
+  # (CloudFront's addresses towards origins) in each supported Region. There is
+  # no intrinsic that looks it up by name. Keep in step with SupportedRegion.
+  RegionMap:
+    us-east-1:      {CloudFrontPrefixList: pl-3b927c52}
+    us-east-2:      {CloudFrontPrefixList: pl-b6a144df}
+    us-west-1:      {CloudFrontPrefixList: pl-4ea04527}
+    us-west-2:      {CloudFrontPrefixList: pl-82a045eb}
+    ca-central-1:   {CloudFrontPrefixList: pl-38a64351}
+    sa-east-1:      {CloudFrontPrefixList: pl-5da64334}
+    eu-west-1:      {CloudFrontPrefixList: pl-4fa04526}
+    eu-west-2:      {CloudFrontPrefixList: pl-93a247fa}
+    eu-west-3:      {CloudFrontPrefixList: pl-75b1541c}
+    eu-central-1:   {CloudFrontPrefixList: pl-a3a144ca}
+    eu-north-1:     {CloudFrontPrefixList: pl-fab65393}
+    ap-south-1:     {CloudFrontPrefixList: pl-9aa247f3}
+    ap-northeast-1: {CloudFrontPrefixList: pl-58a04531}
+    ap-northeast-2: {CloudFrontPrefixList: pl-22a6434b}
+    ap-southeast-1: {CloudFrontPrefixList: pl-31a34658}
+    ap-southeast-2: {CloudFrontPrefixList: pl-b8a742d1}
+
+Conditions:
+  HasKmsKey: !Not [!Equals [!Ref KmsKeyArn, '']]
+  HasTaskSubnets: !Not [!Equals [!Join ['', !Ref TaskSubnetIds], '']]
+  HasAdditionalInstructions: !Not [!Equals [!Ref AdditionalInstructions, '']]
+  GeminiEnabled: !Equals [!Ref GeminiFeatures, Enabled]
+  # Two 4 vCPU tasks need 8 vCPU, above the default Fargate quota of 6.
+  StopBeforeStart: !Equals [!Ref TaskCpu, '4096']
+
+Resources:
+  # Deleted with the stack, so a stack of the same name can be created again.
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /ecs/${AWS::StackName}
+      RetentionInDays: 14
+
+  # Users' data: sign-ins (refresh tokens encrypted with EncryptionKeySecret),
+  # conversation references and channel ownership in UsersTable; scheduled
+  # tasks, briefings and watches in TasksTable. The image's adapters need
+  # exactly this key schema. Kept when the stack is deleted; only a failed
+  # first creation removes them.
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: PartitionKey, AttributeType: S}
+        - {AttributeName: RowKey, AttributeType: S}
+      KeySchema:
+        - {AttributeName: PartitionKey, KeyType: HASH}
+        - {AttributeName: RowKey, KeyType: RANGE}
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  TasksTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: PartitionKey, AttributeType: S}
+        - {AttributeName: RowKey, AttributeType: S}
+      KeySchema:
+        - {AttributeName: PartitionKey, KeyType: HASH}
+        - {AttributeName: RowKey, KeyType: RANGE}
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  # Users' files and memory (GLOBAL_MEMORY.md) outside Microsoft 365, and
+  # conversation snapshots. Kept when the stack is deleted, like the tables.
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+
+  UploadsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Properties:
+      Bucket: !Ref UploadsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt UploadsBucket.Arn
+              - !Sub '${UploadsBucket.Arn}/*'
+            Condition:
+              Bool: {aws:SecureTransport: 'false'}
+
+  ConversationsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+
+  ConversationsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Properties:
+      Bucket: !Ref ConversationsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt ConversationsBucket.Arn
+              - !Sub '${ConversationsBucket.Arn}/*'
+            Condition:
+              Bool: {aws:SecureTransport: 'false'}
+
+  # ENCRYPTION_KEY: 64 lowercase hex characters (digits and a-f). It encrypts
+  # the stored Microsoft 365 refresh tokens and signs the OAuth state, so it
+  # must never change: AWS creates a new secret version whenever
+  # GenerateSecretString changes, and a new key signs every user out. The
+  # block is pinned by hash in scripts/template-invariants.py. A replacement
+  # keeps the old secret; deleting the stack deletes the key, which leaves the
+  # refresh tokens in the retained UsersTable unreadable.
+  # >>> invariant: EncryptionKeySecret
+  EncryptionKeySecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub 'NLSQL AI Employee ENCRYPTION_KEY for stack ${AWS::StackName}. Never change it.'
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludeUppercase: true
+        ExcludePunctuation: true
+        ExcludeCharacters: ghijklmnopqrstuvwxyz
+        IncludeSpace: false
+        RequireEachIncludedType: false
+  # <<< invariant
+
+  # Pulls the image, writes logs and reads the two secrets the task gets.
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: read-secrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref CredentialsSecretArn
+                  - !Ref EncryptionKeySecret
+              - !If
+                - HasKmsKey
+                - Effect: Allow
+                  Action: kms:Decrypt
+                  Resource: !Ref KmsKeyArn
+                  Condition:
+                    StringEquals:
+                      kms:ViaService: !Sub secretsmanager.${AWS::Region}.amazonaws.com
+                - !Ref AWS::NoValue
+
+  # The running container's own role, and its only AWS credentials.
+  # RegisterUsage verifies the subscription: without it the container refuses
+  # to serve. Bedrock covers the global inference profiles and the foundation
+  # models they route to, in any Region. Storage is item-level on this stack's
+  # own tables and buckets: the image never creates a table or a bucket.
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: marketplace-metering
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: aws-marketplace:RegisterUsage
+                Resource: '*'
+        - PolicyName: invoke-claude
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub arn:${AWS::Partition}:bedrock:*::foundation-model/anthropic.*
+                  - !Sub arn:${AWS::Partition}:bedrock:::foundation-model/anthropic.*
+                  - !Sub arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/global.anthropic.*
+        - PolicyName: app-tables
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt UsersTable.Arn
+                  - !GetAtt TasksTable.Arn
+        - PolicyName: app-buckets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource:
+                  - !GetAtt UploadsBucket.Arn
+                  - !GetAtt ConversationsBucket.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub '${UploadsBucket.Arn}/*'
+                  - !Sub '${ConversationsBucket.Arn}/*'
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${AWS::StackName} load balancer
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # CloudFront's origin-facing addresses only; the listener then also
+        # requires this stack's origin header. The prefix list counts as 55
+        # rules against the security group's inbound-rule quota (default 60).
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourcePrefixListId: !FindInMap [RegionMap, !Ref 'AWS::Region', CloudFrontPrefixList]
+          Description: HTTP from CloudFront only (origin header enforced by the listener)
+
+  ServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${AWS::StackName} task
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+          Description: nginx from the load balancer only
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Type: application
+      # Internet-facing is required: CloudFront cannot reach an internal ALB.
+      Scheme: internet-facing
+      Subnets: !Ref SubnetIds
+      SecurityGroups: [!Ref LoadBalancerSecurityGroup]
+      LoadBalancerAttributes:
+        # The live browser's WebSockets stay open while a user watches; the
+        # viewer's heartbeat keeps them busy. Longer than CloudFront's 60 s
+        # keep-alive too, so the ALB never closes a connection CloudFront is
+        # about to reuse.
+        - {Key: idle_timeout.timeout_seconds, Value: '3600'}
+        - {Key: routing.http.drop_invalid_header_fields.enabled, Value: 'true'}
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      # The container runs as an unprivileged user, so nginx binds 8080, not 80.
+      Port: 8080
+      Protocol: HTTP
+      TargetType: ip
+      # 503 until the AWS Marketplace subscription is verified, so ECS replaces
+      # a task that never gets there. With one target the load balancer fails
+      # open; nginx's own 503 gate keeps an unentitled task from serving.
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher: {HttpCode: '200-399'}
+      TargetGroupAttributes:
+        # Turns are acknowledged at once, but the answer is computed afterwards
+        # in the task that took the turn, and ECS stops an old task as soon as
+        # draining ends. 300 s gives in-flight answers time to finish during a
+        # deployment.
+        - {Key: deregistration_delay.timeout_seconds, Value: '300'}
+
+  # The security group admits CloudFront only. Of those requests, only the ones
+  # carrying the header this stack's distribution adds, whose value is this
+  # stack's unique ID, and naming a public path are forwarded; anything else
+  # gets 403.
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            StatusCode: '403'
+            ContentType: text/plain
+            MessageBody: Forbidden
+
+  # The public paths, a second layer behind the image's nginx, which serves
+  # nothing else either. An ALB rule takes at most 5 condition values, 3 per
+  # condition, hence one rule per group. Never list /api/prompt, /proactive
+  # or /validate-vnc: they are internal. A v2 coder adds Priority 40
+  # [/mcp/oauth/callback]. template-invariants checks these lists.
+  ListenerRuleCore:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref Listener
+      Priority: 10
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: X-Origin-Verify
+            Values:
+              - !Select [2, !Split ['/', !Ref AWS::StackId]]
+        - Field: path-pattern
+          PathPatternConfig:
+            Values: [/api/messages, /callback, /health]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # The chat cards' images, served by the image itself.
+  ListenerRuleAssets:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref Listener
+      Priority: 20
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: X-Origin-Verify
+            Values:
+              - !Select [2, !Split ['/', !Ref AWS::StackId]]
+        - Field: path-pattern
+          PathPatternConfig:
+            Values: [/static/*]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # The live browser view (noVNC, its WebSocket and its session API), only
+  # where the browser agent exists.
+  ListenerRuleBrowserView:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: GeminiEnabled
+    Properties:
+      ListenerArn: !Ref Listener
+      Priority: 30
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: X-Origin-Verify
+            Values:
+              - !Select [2, !Split ['/', !Ref AWS::StackId]]
+        - Field: path-pattern
+          PathPatternConfig:
+            Values: [/vnc/*, /websockify/*, /api/browser-use/*]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref AWS::StackName
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      # The image is linux/amd64 only (AWS Marketplace is x86-only).
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      EphemeralStorage:
+        SizeInGiB: !Ref EphemeralStorage
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: ai-employee
+          Image: !Ref ImageUri
+          Essential: true
+          PortMappings:
+            - {ContainerPort: 8080, Protocol: tcp}
+          # Lets supervisord stop every process cleanly before SIGKILL.
+          StopTimeout: 120
+          # tini is the image's PID 1, so no ECS init process; the image runs
+          # as uid 10001 and needs no Linux capability.
+          LinuxParameters:
+            Capabilities:
+              Drop: [ALL]
+          # The names are the image's own (its docs/aws-marketplace.md,
+          # Environment and IAM contract); template-invariants checks them.
+          # MODEL_PROVIDER and CLOUD_PROVIDER repeat what the image forces on
+          # ECS. The image makes VNC_SECRET_KEY and INTERNAL_AUTH_SECRET per
+          # task, and ECS sets AWS_REGION and AWS_DEFAULT_REGION, so none of
+          # those is set here.
+          Environment:
+            - {Name: MODEL_PROVIDER,      Value: aws}
+            - {Name: CLOUD_PROVIDER,      Value: aws}
+            # Bedrock is called in the stack's own Region; the global profile
+            # routes from there.
+            - {Name: MODEL_NAME,          Value: !Ref LanguageModel}
+            - {Name: MODEL_MAX_TOKENS,    Value: '16000'}
+            - {Name: MODEL_TIMEOUT,       Value: '900'}
+            - {Name: MODEL_MEMORY_TOKENS, Value: !Ref ConversationMemoryTokens}
+            - {Name: STREAMING,           Value: !Ref Streaming}
+            - !If
+              - HasAdditionalInstructions
+              - {Name: SYSTEM_PROMPT, Value: !Ref AdditionalInstructions}
+              - !Ref AWS::NoValue
+            - {Name: USER_STORAGE_TABLE_NAME,     Value: !Ref UsersTable}
+            - {Name: TASK_STORAGE_TABLE_NAME,     Value: !Ref TasksTable}
+            - {Name: BLOB_CONTAINER_NAME,         Value: !Ref UploadsBucket}
+            - {Name: CONVERSATION_CONTAINER_NAME, Value: !Ref ConversationsBucket}
+            - {Name: connections__serviceConnection__settings__clientId, Value: !Ref MicrosoftAppId}
+            - {Name: connections__serviceConnection__settings__tenantId, Value: !Ref MicrosoftAppTenantId}
+            # The Microsoft 365 sign-in's redirect URI, registered in Entra.
+            - {Name: REDIRECT_URI, Value: !Sub 'https://${Distribution.DomainName}/callback'}
+            # The public base URL: the cards' images (/static/), always, and
+            # the live browser's links with Gemini.
+            - {Name: BROWSER_USE_HOST, Value: !Sub 'https://${Distribution.DomainName}'}
+            - !If
+              - GeminiEnabled
+              - {Name: GEMINI_MODEL, Value: !Ref GeminiModel}
+              - !Ref AWS::NoValue
+            # The image trusts only this code, so editing it cannot run the
+            # product without a subscription; it can only stop the task.
+            - {Name: AWS_MARKETPLACE_PRODUCT_CODE, Value: f5jcvx1rl6wb66fhzy5qycpnr}
+            - {Name: DEBUG, Value: 'false'}
+          # Injected by ECS at task start; never in the task definition. A
+          # ValueFrom naming a JSON key the secret lacks stops the task, so
+          # GeminiApiKey is read only when Gemini is enabled; otherwise the
+          # variable is absent, never empty.
+          Secrets:
+            - Name: connections__serviceConnection__settings__clientSecret
+              ValueFrom: !Sub '${CredentialsSecretArn}:AppPassword::'
+            - !If
+              - GeminiEnabled
+              - {Name: GEMINI_API_KEY, ValueFrom: !Sub '${CredentialsSecretArn}:GeminiApiKey::'}
+              - !Ref AWS::NoValue
+            - Name: ENCRYPTION_KEY
+              ValueFrom: !Ref EncryptionKeySecret
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ai-employee
+
+  # HTTPS at the edge with CloudFront's own certificate. Bot Framework refuses
+  # a plain HTTP messaging endpoint and the load balancer has no certificate.
+  # Nothing is cached; the distribution only terminates TLS. With the default
+  # certificate CloudFront applies its TLSv1 security policy whatever
+  # MinimumProtocolVersion says, so none is set.
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    DependsOn: [ListenerRuleCore, ListenerRuleAssets]
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub '${AWS::StackName} NLSQL AI Employee'
+        PriceClass: PriceClass_100
+        IPV6Enabled: false
+        Origins:
+          - Id: ai-employee-alb
+            DomainName: !GetAtt LoadBalancer.DNSName
+            OriginCustomHeaders:
+              - HeaderName: X-Origin-Verify
+                HeaderValue: !Select [2, !Split ['/', !Ref AWS::StackId]]
+            CustomOriginConfig:
+              HTTPPort: 80
+              HTTPSPort: 443
+              # HTTP to the load balancer inside AWS; viewers and Bot Framework
+              # see CloudFront's certificate. Security Hub control CloudFront.9
+              # flags an http-only origin: accepted, because the load balancer
+              # has no certificate of its own.
+              OriginProtocolPolicy: http-only
+              OriginSSLProtocols: [TLSv1.2]
+              OriginKeepaliveTimeout: 60
+              # Turns are acknowledged at once, so 60 s is ample. It is also the
+              # longest silence a WebSocket may have; the viewer's heartbeat is
+              # shorter.
+              OriginReadTimeout: 60
+        DefaultCacheBehavior:
+          TargetOriginId: ai-employee-alb
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT]
+          CachedMethods: [GET, HEAD]
+          Compress: false
+          MinTTL: 0
+          DefaultTTL: 0
+          MaxTTL: 0
+          # The four Sec-WebSocket-* headers carry the live view's upgrade.
+          # No Referer: the viewer's URL carries its token.
+          ForwardedValues:
+            QueryString: true
+            Headers: [Authorization, Content-Type, Host, Origin, Sec-WebSocket-Key,
+                      Sec-WebSocket-Version, Sec-WebSocket-Protocol, Sec-WebSocket-Extensions]
+            Cookies:
+              Forward: all
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref AWS::StackName
+
+  # Exactly one task: users' sessions, live browsers and the replies a paused
+  # browser agent waits for live in one process's memory, and Bot Framework
+  # carries no ALB cookie. Scaling is vertical only (TaskCpu, TaskMemory).
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: [ListenerRuleCore, ListenerRuleAssets]
+    Properties:
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      DesiredCount: 1
+      TaskDefinition: !Ref TaskDefinition
+      EnableExecuteCommand: false
+      # Covers image start and the RegisterUsage check before ALB health
+      # counts.
+      HealthCheckGracePeriodSeconds: 300
+      DeploymentConfiguration:
+        # A deployment interrupts the in-memory sessions either way. With 4096
+        # CPU the old task stops first, since two would exceed the default
+        # Fargate quota of 6 vCPU.
+        MinimumHealthyPercent: !If [StopBeforeStart, 0, 100]
+        MaximumPercent: !If [StopBeforeStart, 100, 200]
+        # A task that keeps stopping (for example, not subscribed) fails the
+        # deployment and rolls back instead of retrying for hours. On the first
+        # creation that rolls back the whole stack, log group included, unless
+        # it was created with --disable-rollback.
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !If [HasTaskSubnets, !Ref TaskSubnetIds, !Ref SubnetIds]
+          SecurityGroups: [!Ref ServiceSecurityGroup]
+          AssignPublicIp: !If [HasTaskSubnets, DISABLED, !Ref AssignPublicIp]
+      LoadBalancers:
+        - ContainerName: ai-employee
+          ContainerPort: 8080
+          TargetGroupArn: !Ref TargetGroup
+
+Outputs:
+  MessagingEndpoint:
+    Description: Paste into your Azure Bot, Settings, Configuration, Messaging endpoint.
+    Value: !Sub 'https://${Distribution.DomainName}/api/messages'
+  OAuthRedirectUri:
+    Description: Add as a Web redirect URI of the bot's app registration in Microsoft Entra (Microsoft 365 sign-in).
+    Value: !Sub 'https://${Distribution.DomainName}/callback'
+  BrowserViewUrl:
+    Condition: GeminiEnabled
+    Description: The live browser viewer (Gemini features only).
+    Value: !Sub 'https://${Distribution.DomainName}/vnc/'
+  CloudFrontDomain:
+    Description: The deployment's public domain. Add it to the Teams app's validDomains.
+    Value: !GetAtt Distribution.DomainName
+  HealthCheck:
+    Description: 200 once the AWS Marketplace subscription is verified, 503 before.
+    Value: !Sub 'https://${Distribution.DomainName}/health'
+  UsersTableName:
+    Description: Users' sign-ins and conversation references. Kept when the stack is deleted.
+    Value: !Ref UsersTable
+  TasksTableName:
+    Description: Scheduled tasks, briefings and watches. Kept when the stack is deleted.
+    Value: !Ref TasksTable
+  UploadsBucketName:
+    Description: Users' files and memory outside Microsoft 365. Kept when the stack is deleted.
+    Value: !Ref UploadsBucket
+  ConversationsBucketName:
+    Description: Conversation snapshots. Kept when the stack is deleted.
+    Value: !Ref ConversationsBucket
+  EncryptionKeySecretArn:
+    Description: The stack's ENCRYPTION_KEY. Never change or rotate it; a new key signs every user out.
+    Value: !Ref EncryptionKeySecret
+  ClusterName:
+    Value: !Ref Cluster
+  ServiceName:
+    Value: !GetAtt Service.Name
+  LogGroupName:
+    Value: !Ref LogGroup
+  TaskSecurityGroupId:
+    Description: The task's security group.
+    Value: !Ref ServiceSecurityGroup

@@ -8,3 +8,12 @@ docs/GCP-costs-estimate.csv
 docs/google-solution-validation-response.txt
 docs/NLSQL-technical-GCP-architecture.pdf
 .env
+# Google Cloud service-account key (the main branch ignores it too).
+service-account-key.yaml
+# Local env files (test-stack credentials) and local template/parameter copies.
+.env.*
+*.local.yaml
+# A filled-in Teams manifest and package carry a real bot ID.
+teams/manifest.json
+teams/*.zip
+__pycache__/

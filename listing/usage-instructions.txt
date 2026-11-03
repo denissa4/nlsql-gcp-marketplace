@@ -1,0 +1,37 @@
+NLSQL AI Employee 1.0.0
+Full guide: https://github.com/denissa4/nlsql-gcp-marketplace/blob/<commit>/docs/aws-deployment-guide.md
+
+Image: 709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee:1.0.0
+Deploy this delivery option's CloudFormation template (Amazon ECS, AWS Fargate) in the subscribing account in us-east-1/2, us-west-1/2, ca-central-1, sa-east-1, eu-west-1/2/3, eu-central-1, eu-north-1, ap-south-1, ap-northeast-1/2 or ap-southeast-1/2.
+
+BEFORE YOU START
+1. Enable your Claude model in Amazon Bedrock (Model catalog, use case form if asked, one playground prompt; needs aws-marketplace:Subscribe).
+2. In your Microsoft Azure subscription, create a single-tenant Azure Bot; note its App ID, tenant ID and a client secret.
+3. In Microsoft Entra ID, give the bot's app registration the delegated Microsoft Graph permissions openid, offline_access, User.Read, Mail.ReadWrite, Mail.Send, Files.ReadWrite and Calendars.ReadWrite; grant admin consent.
+4. Two public subnets in different Availability Zones.
+5. Optional, with your own Google Gemini API key: the browser agent and image reading (off by default; see the guide).
+
+DEPLOY
+1. Create one Secrets Manager secret in the stack's Region, JSON keys: AppPassword (bot client secret) and, only with GeminiFeatures=Enabled, GeminiApiKey.
+2. Create the stack: VpcId, SubnetIds, CredentialsSecretArn, MicrosoftAppId, MicrosoftAppTenantId, LanguageModel, optional GeminiFeatures. Acknowledge IAM capabilities. First launch: Preserve successfully provisioned resources (--disable-rollback). Wait for CREATE_COMPLETE (15-25 min).
+3. Azure Bot, Settings, Configuration: Messaging endpoint = the MessagingEndpoint output; add the Microsoft Teams channel.
+4. Entra ID, the bot's app registration, Authentication: add a Web redirect URI = the OAuthRedirectUri output.
+5. Build the Teams app package (teams/build-package.sh, see the guide) and upload it in Teams.
+6. Each Teams user types login once to connect Microsoft 365.
+Other Bot Service channels work without the Microsoft 365 features (Direct Line identity: see the guide).
+
+HEALTH AND MONITORING
+- HealthCheck output: 200 once the subscription is verified, 503 before.
+- LogGroupName: "entitlement verified" at start; "cannot start" says why a task stopped.
+- ECS console: service Events, Tasks, target health.
+
+DATA, ENCRYPTION, ROTATION, BACKUP
+Your secret uses AWS KMS (or your KmsKeyArn). The stack's generated ENCRYPTION_KEY secret encrypts the stored Microsoft 365 refresh tokens: never change it. Two DynamoDB tables (encrypted, point-in-time recovery) and two S3 buckets (SSE-S3, TLS only) hold sign-ins, tasks, history and files, and are kept when the stack is deleted. The load balancer admits only CloudFront with a per-stack header, on the product's paths only. Bedrock global inference may process prompts in any commercial AWS Region. To rotate, update your secret and force a new deployment.
+
+COSTS AND QUOTAS
+Billed by AWS besides the subscription: Fargate (2 vCPU, 8 GB default), load balancer, CloudFront, DynamoDB, S3, Secrets Manager (2 secrets), CloudWatch Logs, public IPv4 and Bedrock tokens, scheduled tasks and alerts included. Fargate vCPU quota: 4+.
+
+EXTERNAL DEPENDENCIES
+This product requires an ongoing internet connection. The following ongoing external services are required to properly function: AWS Marketplace Metering Service, Amazon Bedrock, Amazon DynamoDB, Amazon S3, AWS Secrets Manager, Amazon CloudWatch Logs, Amazon CloudFront, Amazon ECR, Microsoft Azure Bot Service (an Azure Bot in your Azure subscription; its Microsoft Teams channel is free) plus any other channel you enable, Microsoft Bot Connector, Microsoft Entra ID, Microsoft Graph (Teams users' mail, calendar and OneDrive) and Microsoft Teams and SharePoint file hosts (files sent to the bot). Optional, only with your own key: the Google Gemini API and websites the browser agent opens.
+
+Support: info@nlsql.com, https://nlsql.com/contacts

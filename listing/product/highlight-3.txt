@@ -1,0 +1,1 @@
+Runs in your AWS account from one CloudFormation template on Amazon ECS with AWS Fargate: no AWS access keys, a generated encryption key in AWS Secrets Manager, your data in your own DynamoDB tables and S3 buckets.

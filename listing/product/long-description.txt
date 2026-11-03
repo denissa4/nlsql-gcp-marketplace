@@ -1,0 +1,34 @@
+NLSQL AI Employee puts an AI assistant into Microsoft Teams. Each colleague talks to it in a personal chat, in plain language, and it acts on their own Microsoft 365 data once they have signed in.
+
+WHAT IT DOES
+- Email: reads and summarizes the user's recent mail, and writes and sends messages, through Microsoft Graph with the user's own delegated sign-in.
+- Calendar: answers what is on the calendar, and adds and deletes events.
+- Files: saves files to and fetches files from the user's OneDrive, and reads documents sent in the chat: PDF, Word (.docx), Excel (.xlsx), OpenDocument (.odt, .ods) and text files.
+- Memory: remembers what the user asks it to.
+- Scheduling: one-off and recurring tasks set in plain language, a daily morning briefing, and alerts for important email, with draft replies, and for upcoming meetings, delivered into the user's chat.
+- Your choice of Claude model on Amazon Bedrock: Claude Sonnet 5.5 (default), Opus 5, Opus 5.5, Opus 4.8, Sonnet 5, Sonnet 4.6 or Haiku 4.5.
+- Optional, with your own Google Gemini API key: a browser agent that opens websites and fills in forms for the user, in a live browser they can watch and take over, and image reading. Without a key these features are not offered, and nothing is sent to Google.
+- Other Azure Bot Service channels you enable (Web Chat, Direct Line, Telegram and others) work too, without the Microsoft 365 features.
+
+HOW IT RUNS
+One AWS CloudFormation template creates everything in your AWS account: one AWS Fargate task on Amazon ECS, an Application Load Balancer that accepts traffic only from the stack's own Amazon CloudFront distribution, and the CloudFront HTTPS endpoint you register on your Azure Bot. Two Amazon DynamoDB tables and two Amazon S3 buckets hold sign-ins, scheduled tasks, conversation history and files, and are kept when the stack is deleted.
+
+SECURITY AND DATA
+- Your users' data stays in your AWS account, your Microsoft 365 tenant and, only with Gemini enabled, Google. NLSQL receives none of it.
+- The bot's client secret and the optional Gemini key are read from your AWS Secrets Manager secret. The stack generates its own key in Secrets Manager to encrypt the stored Microsoft 365 sign-ins. No secret is written to the task definition or the logs.
+- AWS services are called only through the task's IAM role, limited to the stack's own resources. No AWS access keys are used.
+- The container runs as a non-root user on Debian 13, Python 3.13 and Node.js 24, and verifies your AWS Marketplace subscription before it serves any request.
+- Claude is called through Amazon Bedrock global cross-Region inference, which may process prompts in any commercial AWS Region.
+- With Gemini, pages and images go to Google under your key's terms; use a paid-tier key for business data. There is no network-reachable VNC service: viewer access requires a signed per-session token. The browser runs without Chromium's sandbox, which AWS Fargate cannot provide, so run the task in isolated subnets.
+
+WHAT YOU NEED
+- An AWS account subscribed to this product, with your Claude model enabled in Amazon Bedrock.
+- Microsoft Teams with Microsoft 365, and a Microsoft Azure subscription for the Azure Bot resource that connects Teams to the assistant (the standard Microsoft Teams channel is free), with admin consent for its Microsoft Graph permissions.
+- A VPC with two public subnets in different Availability Zones.
+
+PRICING
+A fixed monthly subscription for the software. AWS infrastructure (AWS Fargate, Elastic Load Balancing, Amazon CloudFront, DynamoDB, S3 and others) and Amazon Bedrock usage, scheduled tasks and alerts included, are billed to your AWS account separately. Microsoft licences, the Azure subscription and an optional Gemini key are your own.
+
+This product requires an ongoing internet connection. The following ongoing external services are required to properly function: AWS Marketplace Metering Service, Amazon Bedrock, Amazon DynamoDB, Amazon S3, AWS Secrets Manager, Amazon CloudWatch Logs, Amazon CloudFront, Amazon ECR, Microsoft Azure Bot Service (an Azure Bot in your Microsoft Azure subscription, with its Microsoft Teams channel, plus any other channel you enable on it), the Microsoft Bot Framework Bot Connector, Microsoft Entra ID, Microsoft Graph (each user's mail, calendar and OneDrive, in Teams, after that user signs in) and the Microsoft Teams and SharePoint file hosts (files sent to the bot). Optional, only if you enable it with your own key: the Google Gemini API, the public websites the browser agent opens at a user's request and, in Teams, the Microsoft Teams JavaScript SDK from res.cdn.office.net in the viewer's browser.
+
+This product extends the functionality of Microsoft Teams and without it, this product has very limited utility. Please note that Microsoft Teams might require its own license for full functionality with this listing.

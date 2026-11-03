@@ -2,8 +2,8 @@
 #
 # The image is built from the application repository (denissa4/ai-employee,
 # branch aws-marketplace-offer, `make build` there); this repo holds the
-# deployment template, and publishes the image to the AWS Marketplace ECR
-# repository.
+# deployment template and listing texts, and publishes the image to the AWS
+# Marketplace ECR repository.
 
 # From the AWS Marketplace Management Portal, after "Add repositories".
 # <sellerName>/<repositoryName>, both created by the portal and permanent.
@@ -21,6 +21,11 @@ APP_BRANCH   := aws-marketplace-offer
 IMAGE    := $(ECR_REGISTRY)/$(ECR_REPO)
 TEMPLATE := cloudformation/nlsql-ai-employee-ecs-fargate.yaml
 GUIDE    := docs/aws-deployment-guide.md
+
+LISTING_USAGE    := listing/usage-instructions.txt
+LISTING_DELIVERY := listing/delivery-option-description.txt
+LISTING_NOTES    := listing/release-notes/$(VERSION).md
+LISTING_PRODUCT  := listing/product
 
 # Trust anchor baked into the image (marketplace/aws_marketplace.py).
 PRODUCT_CODE := f5jcvx1rl6wb66fhzy5qycpnr
@@ -52,7 +57,7 @@ help:
 	  | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: check-vars
-check-vars: ## Template, guide and application agree on the image, product code and messages
+check-vars: ## Template, listing, guide and application agree on the image, product code and messages
 	@test "$(ECR_REPO)" != "ECR_REPO" \
 	  || (echo "ERROR: set ECR_REPO to the repository created in the Marketplace portal" && exit 1)
 	@# The template's ImageUri default is what buyers launch with, so it must
@@ -71,12 +76,17 @@ check-vars: ## Template, guide and application agree on the image, product code 
 	else \
 	  echo "  (no application checkout at $(APP_REPO); baked product code not compared)"; \
 	fi
+	@test -f $(LISTING_NOTES) || (echo "ERROR: $(LISTING_NOTES) is missing" && exit 1)
+	@grep -qF '$(IMAGE):$(VERSION)' $(LISTING_USAGE) \
+	  || (echo "ERROR: $(LISTING_USAGE) does not name $(IMAGE):$(VERSION)" && exit 1)
+	@head -n 1 $(LISTING_USAGE) | grep -qxF 'NLSQL AI Employee $(VERSION)' \
+	  || (echo "ERROR: $(LISTING_USAGE) does not start with 'NLSQL AI Employee $(VERSION)'" && exit 1)
 	@grep -qF '$(IMAGE):$(VERSION)' $(GUIDE) \
 	  || (echo "ERROR: $(GUIDE) does not name $(IMAGE):$(VERSION)" && exit 1)
 	@grep -qF 'Applies to NLSQL AI Employee **$(VERSION)**' $(GUIDE) \
 	  || (echo "ERROR: $(GUIDE) does not say it applies to $(VERSION)" && exit 1)
 	@$(MAKE) --no-print-directory guide-check
-	@echo "  template and guide agree on $(IMAGE):$(VERSION), product $(PRODUCT_CODE)"
+	@echo "  template, listing and guide agree on $(IMAGE):$(VERSION), product $(PRODUCT_CODE)"
 
 .PHONY: guide-check
 guide-check: ## Offline: the guide's Regions, models, parameters, outputs and links; with the app, its quoted messages
@@ -91,7 +101,7 @@ template-invariants: ## Offline: env names, path allowlist, key schema, Regions,
 	  $(call with-cfn-lint,python3 scripts/template-invariants.py --template $(TEMPLATE) $(APP_ARG))
 
 .PHONY: test-scripts
-test-scripts: ## Offline unit tests: template invariants and guide checks (each fails on a planted defect), teams/build-package.sh
+test-scripts: ## Offline unit tests: template invariants, guide and listing checks (each fails on a planted defect), teams/build-package.sh
 	@$(call with-cfn-lint,$(if $(APP_ARG),APP_REPO=$(APP_REPO) )python3 -m unittest discover -s scripts -p "test_*.py")
 
 .PHONY: validate
@@ -101,6 +111,16 @@ validate: template-invariants ## Validate the template with CloudFormation (need
 	@echo "  CloudFormation accepts the template"
 	@$(call with-cfn-lint,cfn-lint $(TEMPLATE))
 	@echo "  cfn-lint passed"
+
+.PHONY: listing-check
+listing-check: ## Enforce Marketplace length and character limits on listing texts, and their Regions
+	@python3 scripts/listing-check.py \
+	  $(LISTING_USAGE):4000 $(LISTING_DELIVERY):999 $(LISTING_NOTES):29999 \
+	  $(LISTING_PRODUCT)/title.txt:72 $(LISTING_PRODUCT)/short-description.txt:1000 \
+	  $(LISTING_PRODUCT)/long-description.txt:5000 $(LISTING_PRODUCT)/support-description.txt:2000 \
+	  $(LISTING_PRODUCT)/highlight-1.txt:250 $(LISTING_PRODUCT)/highlight-2.txt:250 \
+	  $(LISTING_PRODUCT)/highlight-3.txt:250 $(LISTING_PRODUCT)/keywords.txt:keywords \
+	  $(LISTING_USAGE):regions=$(TEMPLATE)
 
 # Credential-shaped strings, and AWS account IDs other than the Marketplace
 # registry's and documentation placeholders, must never reach this public

@@ -1,0 +1,15 @@
+Microsoft Teams
+AI assistant
+AI agent
+AI employee
+email assistant
+calendar assistant
+Microsoft 365
+Microsoft Graph
+Outlook
+OneDrive
+scheduled tasks
+Amazon Bedrock
+Claude
+productivity
+NLSQL

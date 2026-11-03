@@ -1,11 +1,20 @@
-# NLSQL on AWS — full deployment guide
+# NLSQL AI Employee on AWS — full deployment guide
 
-The complete instructions for deploying NLSQL from AWS Marketplace onto Amazon ECS. The
-listing's **Usage instructions** field is capped at 4000 characters, so it carries a
-condensed form and links here.
+The complete instructions for deploying NLSQL AI Employee from AWS Marketplace onto Amazon ECS
+with AWS Fargate. The listing's **Usage instructions** field is capped at 4000 characters, so
+it carries a condensed form and links here.
 
-Applies to NLSQL **1.0.2**, image
-`709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/nlsql:1.0.2`.
+Applies to NLSQL AI Employee **1.0.0**, image
+`709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee:1.0.0`, and the template
+`cloudformation/nlsql-ai-employee-ecs-fargate.yaml` at the same commit as this document.
+
+NLSQL AI Employee is an AI assistant for Microsoft Teams, using Claude on Amazon Bedrock. In
+Teams, once a user signs in to Microsoft 365, it reads and sends their email, manages their
+calendar and works with their OneDrive files. It reads documents sent to it, runs tasks on a
+schedule, sends a daily morning briefing and can watch for important email and upcoming meetings.
+With the optional Google Gemini features it also browses the web for the user, in a live browser
+they can watch and take over, and reads images. The other Azure Bot Service channels (Web Chat,
+Direct Line, Telegram and the rest) work too, without the Microsoft 365 features.
 
 **Contents**
 
@@ -14,351 +23,1050 @@ Applies to NLSQL **1.0.2**, image
 3. [Before you start](#3-before-you-start)
 4. [Step 1 — Store your credentials](#step-1--store-your-credentials)
 5. [Step 2 — Launch the stack](#step-2--launch-the-stack)
-6. [Step 3 — Point your Teams bot at the deployment](#step-3--point-your-teams-bot-at-the-deployment)
-7. [Step 4 — Add the Teams channel and install the bot](#step-4--add-the-teams-channel-and-install-the-bot)
+6. [Step 3 — Connect the Azure Bot and the sign-in](#step-3--connect-the-azure-bot-and-the-sign-in)
+7. [Step 4 — Install the app in Teams](#step-4--install-the-app-in-teams)
 8. [Step 5 — Verify](#step-5--verify)
-9. [Database settings by engine](#database-settings-by-engine)
-10. [Troubleshooting](#troubleshooting)
-11. [Operating the deployment](#operating-the-deployment)
+9. [Using it](#using-it)
+10. [The optional Gemini features](#the-optional-gemini-features)
+11. [The live browser](#the-live-browser)
+12. [Other channels](#other-channels)
+13. [Troubleshooting](#troubleshooting)
+14. [Operating the deployment](#operating-the-deployment)
+15. [External dependencies](#external-dependencies)
+16. [Support](#support)
 
 ---
 
 ## 1. What gets deployed
 
 ```
-Microsoft Teams
-      │  HTTPS
+Microsoft Teams ──► Microsoft Bot Connector     users' browsers: the Microsoft 365
+(and any other Bot Service │  HTTPS, Bot          sign-in redirect, and the live
+ channel you enable)       │  Framework token     browser view (Gemini only)
+                           ▼                               │
+CloudFront distribution           ◄────────────────────────┘
+      │  HTTPS at the edge, CloudFront's own certificate
+      │  HTTP inside AWS, adds X-Origin-Verify: <this stack's unique ID>
       ▼
-CloudFront distribution        ← HTTPS, CloudFront's own certificate
-      │  HTTP (inside AWS)
+Application Load Balancer :80     ← admits CloudFront only; 403 without that header
+      │  HTTP :8080, public paths only
       ▼
-Application Load Balancer :80  ← sticky sessions
-      │  HTTP :8080
-      ▼
-ECS Fargate task               ← NLSQL container, uid 10001
+ECS Fargate task (exactly one)    ← NLSQL AI Employee container, uid 10001
       │
-      ├──► your database (inside your VPC, or reachable from it)
-      ├──► api.nlsql.com           (question → SQL)
-      └──► AWS Marketplace Metering (subscription + hourly usage)
+      ├──► AWS Marketplace Metering Service   (subscription check, once per task)
+      ├──► Amazon Bedrock                      (Claude, global inference profile)
+      ├──► Amazon DynamoDB, 2 tables           (sign-ins; tasks and conversation references)
+      ├──► Amazon S3, 2 buckets                (users' files and memory; conversation history)
+      ├──► Microsoft Entra ID, Microsoft Graph (sign-in; mail, calendar, OneDrive; Teams only)
+      ├──► Microsoft Bot Connector             (replies) and the Teams/SharePoint file hosts
+      ├──► Google Gemini API                   (optional: browser agent and image reading)
+      └──► public websites                     (optional: the browser agent's browsing)
 ```
 
 | Resource | Notes |
 |---|---|
-| ECS cluster and Fargate service | `DesiredCount` tasks, default 1 |
-| Application Load Balancer | internet-facing by default, HTTP on 80 |
-| Target group | port **8080**, health check `/health`, `lb_cookie` stickiness |
-| CloudFront distribution | HTTPS via the default `*.cloudfront.net` certificate |
-| ExecutionRole | pulls the image, writes logs, reads your one secret |
-| TaskRole | `aws-marketplace:RegisterUsage` only |
+| ECS cluster and Fargate service | exactly one task, rolling deployments with automatic rollback |
+| Task definition | linux/amd64, 2 vCPU / 8 GiB / 40 GiB disk by default, port 8080, every Linux capability dropped, no ECS Exec |
+| Application Load Balancer | internet-facing, HTTP 80, idle timeout 3600 s (the live view's WebSockets); default action 403 |
+| Listener rules | forward only the public paths below, and only with this stack's CloudFront origin header |
+| Target group | port **8080**, health check `/health` every 30 s, 300 s draining |
+| CloudFront distribution | HTTPS on the default `*.cloudfront.net` certificate, nothing cached |
+| 2 DynamoDB tables | on demand, encrypted, point-in-time recovery on; **kept when the stack is deleted** |
+| 2 S3 buckets | private, SSE-S3, TLS-only; **kept when the stack is deleted** |
+| Secrets Manager secret for `ENCRYPTION_KEY` | generated by the stack (64 hex characters); deleted with it |
+| ExecutionRole | pulls the image, writes logs, reads your secret and the generated one |
+| TaskRole | RegisterUsage, Claude on Bedrock, item-level access to the two tables and buckets |
+| Security groups | load balancer: 80 from CloudFront's origin-facing addresses only (AWS-managed prefix list); task: 8080 from the load balancer only |
 | CloudWatch log group | `/ecs/<stack-name>`, 14-day retention |
 
-**Why CloudFront is in the path.** Microsoft Bot Framework refuses a plain HTTP messaging
-endpoint, and the load balancer has no certificate of its own. CloudFront supplies a trusted
-HTTPS endpoint with no custom domain and no ACM certificate to buy. Nothing is cached — every
-TTL is zero; it exists purely to terminate TLS.
+Inside the container, nginx on 8080 is the only listening port. The bot, the agent server and
+the live browser's processes listen on 127.0.0.1 or on unix sockets only.
 
-**Why port 8080.** The container runs as an unprivileged user (uid 10001), and an
-unprivileged process cannot bind port 80. AWS Fargate cannot grant `NET_BIND_SERVICE` back,
-so nginx listens on 8080. If you write your own task definition instead of using the
-template, map **8080** — a target group pointed at 80 will never go healthy.
+**Which paths are public.** The load balancer forwards only these. Every other path, including
+the internal `/api/prompt`, gets `403 Forbidden` from the load balancer, and nginx in the task
+answers 404 to anything else that reaches it.
+
+| Path | Who calls it | Routed |
+|---|---|---|
+| `/api/messages` | the Microsoft Bot Connector (every channel) | always |
+| `/callback` | the user's browser, back from the Microsoft 365 sign-in | always |
+| `/health` | the load balancer, and you | always |
+| `/static/*` | Teams and the other channels, for the chat cards' images | always |
+| `/vnc/*` | the user's browser: the live browser's viewer page | `GeminiFeatures=Enabled` only |
+| `/websockify/*` | the viewer page's WebSocket to the live browser | `GeminiFeatures=Enabled` only |
+| `/api/browser-use/*` | the viewer page: open and stop the session | `GeminiFeatures=Enabled` only |
+
+**Why CloudFront is in the path.** Microsoft Bot Framework refuses a plain HTTP messaging
+endpoint, Microsoft Entra ID refuses a plain HTTP redirect URI, and the load balancer has no
+certificate of its own. CloudFront supplies a trusted HTTPS endpoint with no custom domain or
+certificate to buy. Every TTL is zero; it exists only to terminate TLS.
+
+**How the load balancer is kept behind CloudFront.** Its security group admits port 80 only from
+CloudFront's origin-facing addresses (the AWS-managed prefix list
+`com.amazonaws.global.cloudfront.origin-facing`), so a request sent straight to the load
+balancer's DNS name gets no answer. CloudFront also adds a header whose value is this stack's
+unique ID, and the listener forwards only requests that carry it, so a request through any other
+CloudFront distribution gets `403 Forbidden`. The hop from CloudFront to the load balancer is HTTP
+inside AWS, because the load balancer has no certificate of its own. AWS Security Hub control
+**CloudFront.9** reports the distribution's http-only origin for that reason; for this design the
+finding is expected and accepted.
+
+**TLS at the edge.** With CloudFront's default certificate, CloudFront applies its **TLSv1**
+security policy: the distribution still accepts TLS 1.0 and 1.1 from a client that offers
+nothing newer. The Microsoft Bot Connector and current browsers negotiate TLS 1.2 or 1.3. A
+TLS 1.2 minimum needs a custom domain with its own certificate, which version 1.0.0 does not
+offer. CloudFront forwards no `Referer` header, because the live viewer's address carries its
+token.
+
+**Why port 8080.** The container runs as an unprivileged user (uid 10001), which cannot bind
+port 80, and Fargate cannot grant `NET_BIND_SERVICE` back. If you write your own task definition,
+map **8080**.
+
+**Why exactly one task.** Each user's conversation, live browser and the answer a paused browser
+agent waits for live in the task's memory, and Bot Framework carries no load-balancer cookie that
+could pin a user to one of several tasks. Scale up by giving the task more CPU and memory
+([Scaling](#scaling)).
+
+**Why a turn gets an instant reply.** The bot acknowledges each message at once, shows a typing
+indicator while it works, and sends the answer when it is ready, so a long agent run is not cut
+off by Bot Framework's 15 s or CloudFront's 60 s limits.
+
+**Who can call the bot.** `/api/messages` accepts the Microsoft Bot Connector, for the
+conversation it signed (Teams, **Test in Web Chat** in the Azure portal, and every other channel
+you enable), and the bot's own app registration. Anything else, for example another app in your
+Microsoft Entra tenant that obtains a token for the bot, gets `401`, and the log shows
+`[auth] rejected a request from an unexpected caller (iss=<iss>, appid=<appid>)`.
+
+**How the live browser view is protected** (Gemini only). There is **no network-reachable VNC
+service**: the VNC server and its WebSocket relay listen only on unix sockets inside the task,
+and viewer access requires a signed per-session token. A token is minted only into the user's
+own chat, names one browser session and one user, is valid for about an hour and only while that
+session is the user's live one, and is signed with a key that is new for every task. See
+[The live browser](#the-live-browser).
+
+**What is off without Gemini, and in this version.** With `GeminiFeatures=Disabled` (the
+default) the browser agent, its live view and image reading are not offered, and nothing is
+sent to Google. Code mode, which needs a separate coder service, is not part of version 1.0.0.
 
 ## 2. What it costs
 
-The AWS Marketplace charge is per running ECS task-hour, metered by AWS. The free trial
-covers **one task for 30 days**; after that every task is billed, and a second task is billed
-from the moment you start it, trial or not.
+The AWS Marketplace software charge is a fixed **monthly subscription** (the price is shown on the
+listing). There is no free trial. AWS bills the infrastructure below and Amazon Bedrock usage to
+your account separately, from the start.
 
-You pay AWS separately for the infrastructure the template creates. At the defaults
-(1 task, 1024 CPU units, 2048 MiB), in us-east-1, the approximate monthly order of magnitude:
+Approximate monthly cost of the infrastructure at the defaults, running continuously in
+us-east-1 (730 hours):
 
 | Resource | Rough monthly cost |
 |---|---|
-| Fargate task, 1 vCPU / 2 GB, running continuously | ~$36 |
-| Application Load Balancer | ~$17 plus LCU charges |
-| CloudFront | free tier covers light use; then ~$0.085/GB out |
-| CloudWatch Logs | ~$0.50/GB ingested, 14-day retention |
-| Secrets Manager | ~$0.40 per secret |
+| Fargate task, 2 vCPU / 8 GiB (default) | ~$85 ($0.04048 per vCPU-hour, $0.004445 per GiB-hour) |
+| Fargate task, 4 vCPU / 16 GiB | ~$170 |
+| Fargate ephemeral storage above the free 20 GiB (default 40 GiB) | ~$1.60 |
+| Application Load Balancer | ~$16.40 plus LCU charges (~$6 at light traffic) |
+| Public IPv4 addresses (load balancer in two AZs, plus the task) | ~$11 ($0.005 per address-hour) |
+| CloudFront | the always-free tier covers 1 TB and 10 million requests a month; then ~$0.085/GB. An open live view streams the screen while someone watches |
+| DynamoDB | on-demand reads and writes, storage, and point-in-time recovery per GB-month; small for chat-sized data |
+| S3 | ~$0.023 per GB-month, plus requests |
+| Secrets Manager | 2 secrets (yours and the generated `ENCRYPTION_KEY`), ~$0.40 each, plus $0.05 per 10,000 API calls |
+| CloudWatch Logs | ~$0.50 per GB ingested, ~$0.03 per GB-month stored |
+| NAT gateway (only if your network routes through one) | ~$33 plus $0.045/GB |
+| **Amazon Bedrock** | per input and output token, at the chosen model's price |
 
-Check the current figures on the AWS pricing pages — these are indicative only, and vary by
-Region and traffic.
+**Amazon Bedrock is usually the variable part.** Every turn sends the conversation (up to
+`ConversationMemoryTokens`), the user's saved memory and the tools' results, such as email text
+or a document, to Claude, and answers can use up to 16,000 output tokens. Usage also grows
+without anyone typing: scheduled tasks, morning briefings and email and meeting watches call
+Claude in the background. Opus models cost several times more per token than Sonnet, and Haiku
+the least. The template calls Claude through **global cross-Region inference profiles**
+(`global.anthropic.…`), billed at the global-inference price for that model in the Region you
+deploy in. See the [Amazon Bedrock pricing page](https://aws.amazon.com/bedrock/pricing/) for
+current figures.
 
-**Service quotas to be aware of.** The defaults are generous, but a constrained account may
-hit: VPCs per Region (5), Application Load Balancers per Region (50), CloudFront
-distributions per account (200), ECS tasks per service (5000), and Fargate vCPU concurrency
-(the on-demand vCPU quota, which starts low in new accounts). If stack creation fails with a
-quota error, request an increase in Service Quotas and retry.
+**Google Gemini** (optional) is billed by Google to the owner of the key, under that key's terms.
+
+These figures are indicative; check the AWS pricing pages for your Region.
+
+**Outside AWS.** The Azure Bot resource lives in your own Microsoft Azure subscription, where its
+standard Microsoft Teams channel is free; Microsoft 365 or Teams licences are your own.
+
+**Service quotas.** Check these before launching, in **Service Quotas** in the console:
+
+- **Fargate On-Demand vCPU resource count** (default 6; new accounts can start lower). At the
+  default `TaskCpu=2048` a deployment briefly runs two 2 vCPU tasks, so you need at least
+  **4 vCPU**. With `TaskCpu=4096` the template stops the old task before it starts the new one,
+  so 4 vCPU also suffice, at the price of a short outage on every deployment.
+- **Amazon Bedrock tokens and requests per minute** for the chosen model's global
+  cross-Region inference. Low quotas show up as throttling errors in the logs. Request an
+  increase, or choose a smaller model.
+- **Application Load Balancers per Region** (default 50), **VPC security groups** and **inbound
+  rules per security group** (default 60; the load balancer's one rule references CloudFront's
+  origin-facing prefix list, which counts as 55 rules), and **CloudFront distributions per
+  account**.
+
+If stack creation fails with a quota error, request an increase and create the stack again.
 
 ## 3. Before you start
 
-**Subscribe first, and deploy into the same AWS account.** The container calls
-`RegisterUsage` at start-up and exits if the account is not entitled. This is also how AWS
-meters your hourly usage, so it is not optional.
+**Subscribe first, and deploy into the same AWS account.** The container calls `RegisterUsage`
+at start-up and stops if the account is not subscribed.
 
-**Pick one AWS Region and stay in it.** The Secrets Manager secret must be in the same Region
-as the stack — ECS cannot read a secret across Regions. The `us-east-1` in the examples is a
-placeholder for your Region, but leave the `709825985650.dkr.ecr.us-east-1.amazonaws.com`
-image path exactly as written: the Marketplace registry is served from us-east-1 for every
-Region.
+**Pick one supported Region and stay in it.** The template accepts us-east-1, us-east-2,
+us-west-1, us-west-2, ca-central-1, sa-east-1, eu-west-1, eu-west-2, eu-west-3, eu-central-1,
+eu-north-1, ap-south-1, ap-northeast-1, ap-northeast-2, ap-southeast-1 and ap-southeast-2:
+the Regions where the product is offered and every listed Claude model is available through a
+global inference profile. The Secrets Manager secret and your Bedrock model enablement must be in
+that Region. Leave the `709825985650.dkr.ecr.us-east-1.amazonaws.com` image path as written: AWS
+Marketplace serves it to every Region.
 
-**Networking.** Two or more subnets in different Availability Zones. They must have a route
-to the internet — the task reaches `api.nlsql.com` and the Marketplace Metering Service, and
-Microsoft must be able to reach the load balancer. The load balancer and the tasks share one
-subnet list, and the load balancer is internet-facing by default, so **use public subnets**
-(with an internet gateway route) unless you pass `LoadBalancerScheme=internal`, in which case
-Teams cannot deliver messages and only in-VPC clients can reach NLSQL.
+**Enable the Claude model in Amazon Bedrock.** The task role can call Claude but, by design,
+cannot subscribe to it. Someone with AWS Marketplace permissions (`aws-marketplace:Subscribe`
+and `aws-marketplace:ViewSubscriptions`) and Bedrock access does this once per model, in the
+deployment's account and Region:
 
-**A database** reachable from those subnets — see
-[Database settings by engine](#database-settings-by-engine). A read-only user is recommended:
-NLSQL issues only `SELECT` statements.
+1. Open the **Amazon Bedrock console** in your Region, choose **Model catalog** in the left
+   navigation, and filter by provider **Anthropic**.
+2. Choose the model you will set as `LanguageModel` (see the table below).
+3. If asked, submit the **Anthropic use case details** form. Anthropic requires it once per
+   account (or once for the whole organisation from the management account).
+4. Choose **Open in playground** and send one short prompt. The first call subscribes the
+   account to the model; it can take a few minutes to become active.
 
-**An NLSQL API token.** Generate it self-service in your account at https://nlsql.com. The
-NLSQL account and the api.nlsql.com service are included with your AWS Marketplace
-subscription — there is no separate purchase and no approval step.
+If your account still shows the older **Model access** page, request access to the model there
+instead. Then check from the CLI:
 
-**An Azure Bot resource** in the Microsoft 365 tenant you already use for Teams, with a
-single-tenant app registration. You need three values from it: the **Microsoft App ID**, a
-**client secret**, and the **tenant ID**. Create it in the Azure portal under *Azure Bot*,
-not as a bare Entra app registration — only the Azure Bot resource has the messaging-endpoint
-field you will need in Step 3.
+```shell
+aws bedrock get-foundation-model-availability \
+  --model-id anthropic.claude-sonnet-5-5 --region <region>
+# expect "authorizationStatus": "AUTHORIZED", "entitlementAvailability": "AVAILABLE"
+# and "regionAvailability": "AVAILABLE"
 
-**IAM permissions** for whoever launches the stack: creating IAM roles
-(`iam:CreateRole`, `iam:AttachRolePolicy`, `iam:PutRolePolicy`, `iam:PassRole`) — this is what
-`--capabilities CAPABILITY_IAM` acknowledges — plus `secretsmanager:CreateSecret` and the
-usual ECS, Elastic Load Balancing, EC2, CloudFront and CloudWatch Logs permissions.
+aws bedrock-runtime converse --region <region> \
+  --model-id global.anthropic.claude-sonnet-5-5 \
+  --messages '[{"role":"user","content":[{"text":"Reply with OK"}]}]' \
+  --inference-config maxTokens=16
+```
+
+| `LanguageModel` value | Model | `--model-id` for the availability check |
+|---|---|---|
+| `global.anthropic.claude-sonnet-5-5` (default) | Claude Sonnet 5.5 | `anthropic.claude-sonnet-5-5` |
+| `global.anthropic.claude-opus-5` | Claude Opus 5 | `anthropic.claude-opus-5` |
+| `global.anthropic.claude-opus-5-5` | Claude Opus 5.5 | `anthropic.claude-opus-5-5` |
+| `global.anthropic.claude-opus-4-8` | Claude Opus 4.8 | `anthropic.claude-opus-4-8` |
+| `global.anthropic.claude-sonnet-5` | Claude Sonnet 5 | `anthropic.claude-sonnet-5` |
+| `global.anthropic.claude-sonnet-4-6` | Claude Sonnet 4.6 | `anthropic.claude-sonnet-4-6` |
+| `global.anthropic.claude-haiku-4-5-20251001-v1:0` | Claude Haiku 4.5 | `anthropic.claude-haiku-4-5-20251001-v1:0` |
+
+The default is Sonnet: the agent calls tools in a loop, and watches and briefings run
+unattended, where Sonnet's speed and price fit best.
+
+**A Microsoft Azure subscription, an Azure Bot and its Microsoft Entra app.** Create an **Azure
+Bot** resource for the Microsoft 365 tenant you use for Teams, with a **single-tenant** app
+registration. The Azure Bot resource lives in a **Microsoft Azure subscription** of yours; the
+standard Microsoft Teams channel is free. You need three values from it: the **Microsoft App
+ID**, a **client secret** (note its expiry date; see [Rotating credentials](#rotating-credentials))
+and the **tenant ID**. Create it as an Azure Bot, not a bare Entra app registration: only the
+Azure Bot has the messaging-endpoint field used in Step 3. The same app registration is also the
+Microsoft 365 sign-in client and the Teams app's ID.
+
+**On that app registration, the Microsoft Graph permissions for the sign-in.** In the Azure
+portal, **Microsoft Entra ID**, **App registrations**, the bot's app, **API permissions**, **Add a
+permission**, **Microsoft Graph**, **Delegated permissions**, add `openid`, `offline_access`,
+`User.Read`, `Mail.ReadWrite`, `Mail.Send`, `Files.ReadWrite` and `Calendars.ReadWrite`, then
+choose **Grant admin consent for** your tenant (a Privileged Role Administrator, Cloud
+Application Administrator or Application Administrator can). Without admin consent each user is
+asked to consent at sign-in, or refused if your tenant does not let users consent. Under
+**Authentication**, keep **Allow public client flows** at **No**. The redirect URI is added in
+Step 3, once the stack has its domain.
+
+With the Azure CLI instead (it looks the permission IDs up in Microsoft Graph's service
+principal, which has the same well-known app ID in every tenant):
+
+```shell
+APP_ID=<microsoft-app-id>
+GRAPH=00000003-0000-0000-c000-000000000000
+for p in openid offline_access User.Read Mail.ReadWrite Mail.Send Files.ReadWrite Calendars.ReadWrite; do
+  id=$(az ad sp show --id "$GRAPH" --query "oauth2PermissionScopes[?value=='$p'].id" -o tsv)
+  az ad app permission add --id "$APP_ID" --api "$GRAPH" --api-permissions "$id=Scope"
+done
+az ad app permission admin-consent --id "$APP_ID"
+```
+
+**Optional: a Google Gemini API key**, only for the browser agent and image reading (see
+[The optional Gemini features](#the-optional-gemini-features)). Without one, leave
+`GeminiFeatures=Disabled`.
+
+**Networking.** Two or more **public** subnets (route to an internet gateway) in different
+Availability Zones of one VPC. The load balancer is internet-facing, and by default the task runs
+in the same subnets with a public IP (`AssignPublicIp=ENABLED`) to reach the Metering Service,
+Bedrock, DynamoDB, S3, Microsoft and, with Gemini, Google and the websites the browser agent
+visits. Attachments are downloaded over IPv4 or native IPv6; a network with DNS64/NAT64 only does
+not work.
+
+**With Gemini on, the browser agent browses the internet from inside the task**, and its
+Chromium runs without its own sandbox (see [The live browser](#the-live-browser)). Run the task
+in subnets with **no route to sensitive internal systems**: pass **`TaskSubnetIds`** with private
+subnets behind a NAT gateway that reach the internet and nothing else you care about, or keep the
+default public subnets in a VPC of their own. Check the task security group's outbound rules and
+any peering, VPN or Transit Gateway routes of those subnets. `TaskSubnetIds` must be in the same
+VPC and only in Availability Zones where `SubnetIds` also has a subnet: the load balancer cannot
+reach a task in any other zone, so that task never becomes healthy.
+
+**IAM permissions for whoever launches the stack**, at least (CloudFormation's own
+`cloudformation:*` stack actions come on top, and each resource type may need a few more
+describe and tag actions):
+
+- creating IAM roles (`iam:CreateRole`, `iam:PutRolePolicy`, `iam:AttachRolePolicy`,
+  `iam:GetRole`, `iam:PassRole`, and the matching delete actions): this is what
+  `--capabilities CAPABILITY_IAM` acknowledges;
+- DynamoDB: `dynamodb:CreateTable`, `dynamodb:DescribeTable`,
+  `dynamodb:UpdateContinuousBackups`, `dynamodb:DescribeContinuousBackups`,
+  `dynamodb:TagResource` and, to remove the tables later, `dynamodb:DeleteTable`;
+- S3: `s3:CreateBucket`, `s3:PutEncryptionConfiguration`, `s3:PutBucketPublicAccessBlock`,
+  `s3:PutBucketOwnershipControls`, `s3:PutBucketPolicy`, `s3:PutBucketTagging` (when the stack
+  is tagged) and, for a rollback or to remove the buckets later, `s3:DeleteBucketPolicy` and
+  `s3:DeleteBucket`;
+- Secrets Manager: `secretsmanager:CreateSecret` (Step 1 and the generated key),
+  `secretsmanager:GetRandomPassword`, `secretsmanager:TagResource`, `secretsmanager:DeleteSecret`;
+- the usual ECS, Elastic Load Balancing, EC2 (security groups), CloudFront and CloudWatch Logs
+  create, describe and delete permissions.
 
 ---
 
 ## Step 1 — Store your credentials
 
-One AWS Secrets Manager secret, JSON, with all three keys. `AppPassword` is the Azure Bot
-client secret.
+One AWS Secrets Manager secret, JSON, in the stack's Region.
+
+| Key | When | Value |
+|---|---|---|
+| `AppPassword` | always | the Azure Bot's client secret |
+| `GeminiApiKey` | `GeminiFeatures=Enabled` only | your Google Gemini API key |
+
+Writing the JSON to a file only you can read keeps the values out of your shell history and
+process list:
 
 ```shell
+(umask 077; cat > secret.json <<'EOF'
+{"AppPassword":"<bot-client-secret>","GeminiApiKey":"<gemini-api-key>"}
+EOF
+)
 aws secretsmanager create-secret \
-  --name nlsql/credentials \
-  --region us-east-1 \
-  --secret-string '{"ApiToken":"<your-nlsql-token>","DbPassword":"<your-db-password>","AppPassword":"<your-bot-secret>"}'
+  --name nlsql-ai-employee/credentials \
+  --region <region> \
+  --secret-string file://secret.json
+rm secret.json
 ```
 
-Note the returned ARN — Step 2 needs it. Nothing else in the deployment stores these values:
-ECS injects them at task start, and they never appear in the task definition, the image, the
-template or the logs.
+Without Gemini, `{"AppPassword":"<bot-client-secret>"}` is enough. To encrypt the secret with
+your own KMS key, add `--kms-key-id <kms-key-arn>` and pass the same ARN as `KmsKeyArn` in Step 2.
+
+Note the returned ARN; Step 2 needs it. ECS injects these values into the container at task start;
+they never appear in the task definition, the image, the template or the logs.
+
+**The other keys are made for you.** The stack generates `ENCRYPTION_KEY` in a second secret of
+its own: it encrypts the stored Microsoft 365 sign-ins and signs the sign-in links, so it must
+stay the same for the life of the stack. The container makes two more keys at every start, in
+memory only: one that the bot and the agent server use to call each other inside the task, and
+one that signs the live browser's viewer tokens. Neither is stored, and neither needs rotating:
+a new task simply has new ones.
 
 ## Step 2 — Launch the stack
 
-Download the deployment template from the listing's **Deployment templates** link, then in
-the CloudFormation console choose **Create stack → Upload a template file**. Or use the CLI:
+From the listing, choose **Continue to Subscribe**, then **Continue to Configuration**, pick the
+**Amazon ECS** delivery option and the version, and **Continue to Launch**. The launch page links
+the deployment template. Download it, then in the CloudFormation console choose **Create stack**,
+**With new resources**, **Upload a template file**. For the first launch, under **Stack failure
+options** choose **Preserve successfully provisioned resources**: if the first task cannot
+start, the stack then keeps its log group, cluster and stopped tasks so you can read why (see
+[If creation fails](#if-creation-fails)). Or use the CLI, where `--disable-rollback` does the same:
 
 ```shell
 aws cloudformation create-stack \
-  --stack-name nlsql \
-  --template-body file://nlsql-ecs-fargate.yaml \
+  --stack-name nlsql-ai-employee \
+  --template-body file://nlsql-ai-employee-ecs-fargate.yaml \
   --capabilities CAPABILITY_IAM \
-  --region us-east-1 \
+  --disable-rollback \
+  --region <region> \
   --parameters \
-    ParameterKey=VpcId,ParameterValue=vpc-xxxxxxxx \
-    ParameterKey=SubnetIds,ParameterValue='subnet-aaaa\,subnet-bbbb' \
-    ParameterKey=DatabaseType,ParameterValue=MSSQL \
-    ParameterKey=DataSource,ParameterValue=db.example.com \
-    ParameterKey=DbName,ParameterValue=analytics \
-    ParameterKey=DbPort,ParameterValue=1433 \
-    ParameterKey=DbUser,ParameterValue=nlsql_readonly \
-    ParameterKey=CredentialsSecretArn,ParameterValue=arn:aws:secretsmanager:us-east-1:...:secret:nlsql/credentials-XXXXXX \
-    ParameterKey=MicrosoftAppId,ParameterValue=00000000-0000-0000-0000-000000000000 \
-    ParameterKey=MicrosoftAppTenantId,ParameterValue=00000000-0000-0000-0000-000000000000 \
-    ParameterKey=MicrosoftAppType,ParameterValue=SingleTenant
+    ParameterKey=VpcId,ParameterValue=<vpc-id> \
+    ParameterKey=SubnetIds,ParameterValue='<subnet-id-1>\,<subnet-id-2>' \
+    ParameterKey=CredentialsSecretArn,ParameterValue=<secret-arn> \
+    ParameterKey=MicrosoftAppId,ParameterValue=<microsoft-app-id> \
+    ParameterKey=MicrosoftAppTenantId,ParameterValue=<tenant-id> \
+    ParameterKey=LanguageModel,ParameterValue=global.anthropic.claude-sonnet-5-5 \
+    ParameterKey=GeminiFeatures,ParameterValue=Disabled
 ```
+
+For the Gemini features, pass `GeminiFeatures=Enabled`, with `GeminiApiKey` in the secret.
 
 ### Every parameter
 
 | Parameter | Required | Default | Meaning |
 |---|---|---|---|
 | `VpcId` | yes | — | VPC to deploy into |
-| `SubnetIds` | yes | — | two or more subnets, different AZs |
-| `LoadBalancerScheme` | no | `internet-facing` | `internal` keeps it inside the VPC (breaks Teams) |
-| `ImageUri` | no | the 1.0.1 image | leave alone unless pinning an older version |
-| `DatabaseType` | no | `MSSQL` | `MSSQL`, `MySQL`, `PostgreSQL`, `Redshift`, `Snowflake` |
-| `DataSource` | yes | — | database host, or Snowflake account identifier |
-| `DbName` | yes | — | database name |
-| `DbPort` | no | `1433` | 1433 / 3306 / 5432 / 5439; ignored for Snowflake |
-| `DbSchema` | no | empty | engine default; **required** for Snowflake |
-| `DbUser` | yes | — | read-only user recommended |
-| `Warehouse` | no | empty | **required** for Snowflake |
-| `CredentialsSecretArn` | yes | — | the ARN from Step 1 |
-| `MicrosoftAppId` | yes | — | Azure Bot application ID |
-| `MicrosoftAppTenantId` | yes | — | Entra tenant ID |
-| `MicrosoftAppType` | no | `SingleTenant` | or `MultiTenant` |
-| `TaskCpu` | no | `1024` | 512 / 1024 / 2048 / 4096 |
-| `TaskMemory` | no | `2048` | must be valid for the CPU size |
-| `DesiredCount` | no | `1` | the free trial covers 1 |
+| `SubnetIds` | yes | — | two or more public subnets in different AZs |
+| `AssignPublicIp` | no | `ENABLED` | keep `ENABLED` in public subnets; ignored with `TaskSubnetIds` |
+| `TaskSubnetIds` | no | empty | private subnets behind a NAT gateway for the task: a fixed egress IP, and the task and its browser kept out of the public subnets; same VPC, only in Availability Zones that also have one of `SubnetIds` |
+| `MicrosoftAppId` | yes | — | Azure Bot application (client) ID |
+| `MicrosoftAppTenantId` | yes | — | Entra tenant ID of the bot |
+| `CredentialsSecretArn` | yes | — | full ARN of the secret from Step 1 |
+| `KmsKeyArn` | no | empty | customer managed KMS key of that secret |
+| `LanguageModel` | no | `global.anthropic.claude-sonnet-5-5` | Claude model; must be enabled in Bedrock |
+| `ConversationMemoryTokens` | no | `8000` | `8000`, `16000`, `32000` or `64000`: how much of each conversation the model sees; older messages are summarized. More costs more per answer |
+| `Streaming` | no | `false` | `true` shows answers in the chat as they are generated |
+| `AdditionalInstructions` | no | empty | up to 4000 characters added to the built-in system prompt, for every user |
+| `GeminiFeatures` | no | `Disabled` | `Enabled` turns on the browser agent, its live view and image reading; the secret must then hold `GeminiApiKey` |
+| `GeminiModel` | no | `gemini-3.8-flash` | `gemini-3.8-flash`, `gemini-3.6-flash` or `gemini-3.5-flash-lite`; used only with Gemini on |
+| `TaskCpu` | no | `2048` | `2048` or `4096` CPU units; with `4096` every deployment stops the old task first |
+| `TaskMemory` | no | `8192` | MiB; 4096–16384 with 2048 CPU, 8192–30720 with 4096 CPU |
+| `EphemeralStorage` | no | `40` | task disk in GiB, 30–200; the image counts against it |
+| `ImageUri` | no | the 1.0.0 image | leave alone unless pinning another published version |
+
+The template refuses to create a stack in an unsupported Region, or with a CPU and memory pair
+Fargate does not offer. It cannot see inside your secret: with `GeminiFeatures=Enabled` and no
+`GeminiApiKey` in it, the task cannot start (see [First launch](#first-launch)).
+
+**Sizing.** The default 2 vCPU / 8 GiB serves a team's chat comfortably. The live browser is what
+needs room: each session costs about 0.5 to 1 GiB, and at most
+min((memory − 2 GiB) / 1 GiB, 2 × vCPUs, 10) sessions run at once, 4 at the default size; a
+user beyond that is asked to try again in a few minutes. Raise `TaskMemory` (and `TaskCpu`) for
+more concurrent browsers. Files sent in the chat stay on the task disk for at most 24 hours
+untouched (and at most 250 MiB per user), so 40 GiB suits most teams.
 
 ### Wait for it
 
-Creation takes roughly 10–20 minutes, most of it CloudFront. The outputs do not exist until
-the stack completes, so wait rather than moving straight on:
+Creation takes roughly 15–25 minutes: CloudFront, then the first task starting and verifying the
+subscription. The outputs exist only once the stack completes:
 
 ```shell
-aws cloudformation wait stack-create-complete --stack-name nlsql --region us-east-1
+aws cloudformation wait stack-create-complete --stack-name nlsql-ai-employee --region <region>
 ```
 
-If it rolls back, the first failure is at the bottom of:
+To watch the task start, follow its logs from another terminal once the log group exists (a
+minute or two after creation starts). The output stays on your screen even if the stack rolls back
+and deletes the log group:
 
 ```shell
-aws cloudformation describe-stack-events --stack-name nlsql --region us-east-1 --max-items 25
+aws logs tail /ecs/nlsql-ai-employee --follow --region <region>
 ```
 
-## Step 3 — Point your Teams bot at the deployment
+### If creation fails
 
-**This is the step that connects your existing Teams bot to your new AWS deployment.** Until
-you do it, Teams messages still go wherever the bot pointed before, and your AWS deployment
-receives nothing.
+The first failure is at the bottom of:
+
+```shell
+aws cloudformation describe-stack-events --stack-name nlsql-ai-employee --region <region> \
+  --query "StackEvents[?contains(ResourceStatus, 'FAILED')].[LogicalResourceId, ResourceStatusReason]" \
+  --output table
+```
+
+`ECS Deployment Circuit Breaker was triggered` means the task kept stopping. With rollback disabled
+the stack stops in `CREATE_FAILED` and keeps its resources: read the stopped tasks' reasons (ECS
+lists stopped tasks for about an hour) and the logs ([Monitoring](#monitoring)), and match them in
+[Troubleshooting](#troubleshooting). If the stack rolled back instead (the default), it ends in
+`ROLLBACK_COMPLETE`: its cluster, stopped tasks and log group are gone, and a stack in that state
+can only be deleted. Either way, fix the cause, clean up as below, and create the stack again.
+
+**What a failed first creation leaves behind** depends on how it ended. A rollback
+(`ROLLBACK_COMPLETE`) deletes the tables, the buckets and their policies with everything else.
+A stack left in `CREATE_FAILED` with rollback disabled does not: deleting it **keeps** the two
+tables and two buckets (`RetainExceptOnCreate` removes them only when the creating operation
+rolls back), and each such attempt leaves another set that keeps costing. Once you have read
+why it failed, do not delete it straight away: roll it back first, wait until it reaches
+`ROLLBACK_COMPLETE`, then delete it:
+
+```shell
+aws cloudformation rollback-stack --stack-name nlsql-ai-employee --region <region>
+# rolling back a creation ends in ROLLBACK_COMPLETE (the "stack-rollback-complete" waiter
+# waits for UPDATE_ROLLBACK_COMPLETE instead, so it does not apply here)
+until s=$(aws cloudformation describe-stacks --stack-name nlsql-ai-employee --region <region> \
+      --query 'Stacks[0].StackStatus' --output text) && \
+    { [ "$s" = ROLLBACK_COMPLETE ] || [ "$s" = ROLLBACK_FAILED ]; }; do
+  sleep 15
+done; echo "$s"
+aws cloudformation delete-stack --stack-name nlsql-ai-employee --region <region>
+aws cloudformation wait stack-delete-complete --stack-name nlsql-ai-employee --region <region>
+```
+
+You can also watch the stack in the CloudFormation console and delete it once its status reads
+`ROLLBACK_COMPLETE`. If it shows `ROLLBACK_FAILED` instead, the events say which resource could
+not be removed; remove it by hand, then delete the stack.
+
+If you already deleted a `CREATE_FAILED` stack, find its tables and buckets in the DynamoDB and
+S3 consoles by the stack's name and remove them with the commands in [Uninstalling](#uninstalling).
+
+## Step 3 — Connect the Azure Bot and the sign-in
 
 Read the stack outputs:
 
 ```shell
-aws cloudformation describe-stacks --stack-name nlsql \
-  --query 'Stacks[0].Outputs' --region us-east-1 --output table
+aws cloudformation describe-stacks --stack-name nlsql-ai-employee --region <region> \
+  --query 'Stacks[0].Outputs' --output table
 ```
 
 | Output | What it is |
 |---|---|
-| `MessagingEndpoint` | `https://<id>.cloudfront.net/api/messages` — **paste this into Azure** |
-| `ApplicationUrl` | `https://<id>.cloudfront.net/` — open in a browser |
-| `HealthCheck` | returns 200 once the service is in service |
-| `LogGroupName` | where container logs land |
-| `LoadBalancerUrl` | the HTTP origin behind CloudFront — **not** valid for Bot Framework |
+| `MessagingEndpoint` | `https://<id>.cloudfront.net/api/messages`: **paste this into the Azure Bot** |
+| `OAuthRedirectUri` | `https://<id>.cloudfront.net/callback`: **add this to the bot's app registration** |
+| `CloudFrontDomain` | the deployment's domain, `<id>.cloudfront.net`; the Teams package's `validDomains` |
+| `BrowserViewUrl` | `https://<id>.cloudfront.net/vnc/`, the live browser's viewer (Gemini only) |
+| `HealthCheck` | `https://<id>.cloudfront.net/health`: 200 once the subscription is verified, 503 before |
+| `UsersTableName` | the DynamoDB table of Microsoft 365 sign-ins |
+| `TasksTableName` | the DynamoDB table of scheduled tasks, briefings and watches, and of the conversation references that the bot's own messages are sent through |
+| `UploadsBucketName` | users' files and memory outside Microsoft 365 |
+| `ConversationsBucketName` | conversation history snapshots |
+| `EncryptionKeySecretArn` | the generated `ENCRYPTION_KEY`; never change it |
+| `ClusterName`, `ServiceName` | for `aws ecs update-service` |
+| `LogGroupName` | container logs |
+| `TaskSecurityGroupId` | the task's security group |
 
-Then, in the Azure portal:
+**The messaging endpoint and the Teams channel.** In the Azure portal:
 
 1. Open your **Azure Bot** resource.
-2. Go to **Settings → Configuration**.
-3. Put the `MessagingEndpoint` value into the **Messaging endpoint** field. It must be the
-   HTTPS CloudFront URL ending in `/api/messages` — Bot Framework rejects plain HTTP, so
-   `LoadBalancerUrl` will not work here.
-4. **Apply**.
+2. Go to **Settings**, **Configuration**.
+3. Put the `MessagingEndpoint` value into **Messaging endpoint** and choose **Apply**.
+4. Go to **Channels**, add **Microsoft Teams**, and accept the terms.
 
-The CloudFront domain is generated when the stack is created, so it is different for every
-deployment and changes if you delete and recreate the stack. If you recreate it, come back
-and update this field again.
+**The sign-in's redirect URI.** In **Microsoft Entra ID**, **App registrations**, the bot's app,
+**Authentication**, **Add a platform**, choose **Web** (not **Single-page application**), and
+enter the `OAuthRedirectUri` value exactly: `https`, no trailing slash. Choose **Configure**. With
+the Azure CLI:
 
-## Step 4 — Add the Teams channel and install the bot
+```shell
+az ad app update --id <microsoft-app-id> --web-redirect-uris https://<cloudfront-domain>/callback
+```
 
-Still on the Azure Bot resource:
+That command replaces the app's list of web redirect URIs; name any others you need in the same
+command.
 
-1. Go to **Channels**, add **Microsoft Teams**, and accept the terms.
-2. From the Teams channel row, use **Open in Teams** to start a conversation with the bot,
-   or distribute it to your organisation by uploading a Teams app package under
-   *Teams → Apps → Manage your apps → Upload an app*.
+The CloudFront domain is generated per stack. If you delete and re-create the stack, update the
+messaging endpoint, the redirect URI and the Teams package (Step 4) for the new domain.
 
-A Teams app package is a zip containing `manifest.json` and two icons, where `id` and
-`bots[0].botId` are both your Microsoft App ID and `validDomains` includes your CloudFront
-domain. If your organisation already distributes the NLSQL Teams app, update its
-`validDomains` to the new CloudFront domain rather than creating a second app.
+## Step 4 — Install the app in Teams
+
+The repository's [`teams/`](../teams/README.md) folder holds a manifest template, the icons and
+`build-package.sh`, which builds the Teams package from your stack's outputs with no values typed
+by hand. The manifest uses **personal scope** with `supportsFiles: true`, because Teams delivers
+files to a bot only in one-to-one chats, and lists the deployment's domain in `validDomains`,
+which the live browser's Teams dialog needs. With Gemini on, it also adds a **Browser-Use** tab,
+which is a help page: the live browser itself opens from the chat (see
+[The live browser](#the-live-browser)).
+
+In AWS CloudShell, in the stack's Region, fetch the four files at the commit the listing links
+to, and build the package:
+
+```shell
+C=<commit>    # the commit named in the listing's links
+mkdir -p teams
+for f in build-package.sh manifest.template.json color.png outline.png; do
+  curl -fsSLo "teams/$f" "https://raw.githubusercontent.com/denissa4/nlsql-gcp-marketplace/$C/teams/$f"
+done
+chmod +x teams/build-package.sh
+teams/build-package.sh --stack nlsql-ai-employee
+```
+
+It reads the stack once and writes `teams/manifest.json` and `teams/nlsql-ai-employee-teams.zip`.
+From a clone of the repository at that commit, `teams/build-package.sh --stack <stack-name>` is
+enough. Without AWS access, `teams/build-package.sh --app-id <microsoft-app-id> --domain
+<cloudfront-domain>` (add `--browser-view` only with Gemini on) makes no AWS call.
+
+Upload the zip in Teams (**Apps**, **Manage your apps**, **Upload an app**), or have a Teams
+administrator publish it for the organisation in the Teams admin center (**Teams apps**,
+**Manage apps**, **Upload new app**). Build and upload it again, with a higher `--version`, when
+the domain changes or Gemini is switched on or off.
 
 ## Step 5 — Verify
 
-**The application answers.** Open `ApplicationUrl` in a browser, or check the health endpoint:
+**The subscription verified and the task is serving.** `HealthCheck` returns 200:
 
 ```shell
-curl -sS -o /dev/null -w '%{http_code}\n' "$(aws cloudformation describe-stacks \
-  --stack-name nlsql --region us-east-1 \
-  --query 'Stacks[0].Outputs[?OutputKey==`HealthCheck`].OutputValue' --output text)"
+curl -sS -w ' %{http_code}\n' https://<cloudfront-domain>/health
+# {"status":"UP"} 200     (503 {"status":"STARTING"} until the subscription is verified)
 ```
 
-**The subscription verified.** In the log group named by `LogGroupName`, look for the
-entitlement line at task start:
+**The log confirms metering.** Look for the entitlement line at task start:
 
 ```shell
-aws logs filter-log-events --log-group-name /ecs/nlsql --region us-east-1 \
-  --filter-pattern '"AWS Marketplace"' --query 'events[].message' --output text
+aws logs filter-log-events --log-group-name /ecs/nlsql-ai-employee --region <region> \
+  --filter-pattern '"entitlement verified"' --query 'events[].message' --output text
 ```
 
-`AWS Marketplace: entitlement verified for product ...` means `RegisterUsage` succeeded and
-AWS is metering this task. If you see `CustomerNotEntitledException`, the account is not
-subscribed; if the task exits repeatedly, see [Troubleshooting](#troubleshooting).
+`AWS Marketplace: entitlement verified for NLSQL AI Employee (product <code>, region <region>).`
+means `RegisterUsage` succeeded and AWS is metering this task. The line
+`NLSQL AI Employee: Bedrock probe for <model> succeeded.` means the task role can call your
+Claude model.
 
-**Ask a real question.** Message the bot in Teams — this is the only end-to-end proof that
-Teams, CloudFront, the container and your database all work together.
+**In Teams.** Open the app. The bot greets you with `**Welcome! I'm NLSQL AI Employee.**`
+followed by what it can do; without Gemini that is
+`I can read and send your email, manage your calendar, read documents, and run tasks on a schedule.`
+Then:
+
+1. Type `login`, select the sign-in button, and sign in with your Microsoft 365 account. The page
+   that opens confirms the sign-in; go back to the chat.
+2. Ask a calendar question, for example "What is on my calendar tomorrow?".
+3. Send a PDF or Word file and ask about it.
+4. With Gemini on: ask it to open a website and find something. A card says
+   `Your live browser is ready.`; select **Open live browser** to watch it in a Teams dialog.
+
+This is the only end-to-end proof that Teams, CloudFront, the container, Bedrock and Microsoft
+Graph work together. The load balancer's own DNS name not answering is expected: its security
+group admits CloudFront only.
 
 ---
 
-## Database settings by engine
+## Using it
 
-| Parameter | MSSQL | MySQL | PostgreSQL | Redshift | Snowflake |
-|---|---|---|---|---|---|
-| `DataSource` | host | host | host | host | **account identifier** |
-| `DbPort` | 1433 | 3306 | 5432 | 5439 | ignored |
-| `DbName` | yes | yes | yes | yes | yes |
-| `DbSchema` | optional | optional | optional | optional | **required** |
-| `Warehouse` | — | — | — | — | **required** |
-| `DbUser` / `DbPassword` | yes | yes | yes | yes | yes |
+Users talk to it in plain language. The commands, in Teams:
 
-The database must accept connections from the task's subnets. For Amazon RDS or Redshift in
-the same VPC, add a security group rule allowing the stack's task security group on the
-database port. For a database outside AWS, allow the public egress IP of your NAT gateway, or
-the task ENI's public IP if you deployed into public subnets.
+| Command | What it does |
+|---|---|
+| `/help` | what it can do, and the commands |
+| `login` | sign in to Microsoft 365 for mail, calendar and OneDrive (Teams only) |
+| `refresh` | wipe the conversation history and start fresh; saved memory and scheduled tasks stay |
+| `/schedule <what & when>` | schedule a task, for example `/schedule email me a joke every Friday at 4pm` |
+| `/tasks` | list the user's scheduled tasks, briefings and watches |
+| `/memory` | show what it has saved to the user's long-term memory |
+| `/briefing [HH:MM \| off]` | a daily morning briefing: calendar, inbox highlights and due tasks |
+| `/watch [emails\|meetings] [on\|off]` | alerts for important email, with draft replies, and meeting-prep briefs about 15 minutes ahead (Teams only) |
+
+Every command also works with a `#` prefix or bare (`help`), except `schedule`, which keeps its
+slash, since `schedule` followed by text is an ordinary request. **Times are UTC**: briefings, and
+the times the bot reports for scheduled tasks. Results of scheduled tasks, briefings and watches
+arrive as messages in the user's chat.
+
+**Teams: personal chat only.** The app is installed in personal scope; Teams delivers files to a
+bot only there, and each user's files, memory, tasks and sign-in are their own. Files sent in the
+chat (up to 50 MiB each) stay on the task's disk for at most 24 hours untouched and, once the user
+has signed in, are also copied to their OneDrive folder **AI Employee Uploads**. The agent reads
+PDF, Word (`.docx`), OpenDocument (`.odt`, `.ods`), Excel (`.xlsx`, the active sheet) and UTF-8
+text files. It does not read the old Excel format: a `.xls` file gets
+`Error: old Excel .xls files cannot be read. Save it as .xlsx or CSV and send it again.` A PDF
+page too complex for the reader's safety limits is skipped with the note
+`[Page <n>: not read, because it is too complex for the reader's safety limits.]`, and the other
+pages are still read. A scanned PDF with no text layer cannot be read.
+
+**Memory.** On Teams, a signed-in user's long-term memory is the file
+`AI Employee Uploads/GLOBAL_MEMORY.md` in their OneDrive; otherwise, and when OneDrive cannot be
+reached, it is kept in the uploads bucket. The agent adds to it when asked to remember something.
+
+## The optional Gemini features
+
+`GeminiFeatures=Enabled`, with `GeminiApiKey` in the secret, turns on two features that call the
+**Google Gemini API** with **your own key**:
+
+- **the browser agent**: it opens websites, clicks, fills in forms and reads pages for the user,
+  in a live browser the user can watch and take over ([The live browser](#the-live-browser));
+- **image reading**: it describes and marks up images sent in the chat. The marked-up copy is
+  kept in the user's files, and on Teams also uploaded to their OneDrive folder; on other
+  channels it stays in the task.
+
+Get a key in Google AI Studio (https://aistudio.google.com), for a Google Cloud project with the
+Gemini API enabled, and choose `GeminiModel`. With Gemini off, neither feature is offered to
+users, the live view's paths are not routed, and nothing is sent to Google.
+
+**What is sent to Google.** For the browser agent: the task the user gave, and screenshots and
+the text of the pages it visits, including anything the user or the agent typed into them. For
+image reading: the image and the question about it. This goes to Google under **your key's
+terms**, not AWS's: on Google's free tier, Google may use the content to improve its products.
+Use a key from a paid (billing-enabled) project for business data, and check Google's current
+Gemini API terms.
+
+## The live browser
+
+Gemini only. The browser agent drives a Chromium browser inside the task, and the user can watch
+it, and take over the mouse and keyboard, through a viewer page.
+
+- **In Teams** no link is posted. The bot's card carries an **Open live browser** button, which
+  opens the viewer in a Teams dialog titled `Live browser`, on a freshly signed address. When the
+  agent needs the user (a sign-in, a CAPTCHA, a choice), it asks
+  `Select **Open live browser** below to take over the browser.` and waits up to 15 minutes for
+  the user's next message, which goes to the browser agent, not to the main conversation.
+  The **Browser-Use** tab only says where to open the browser.
+- **On other channels** the bot sends a link to `/vnc/?t=<token>`, for example
+  `**View your browser session [here](<link>)**`. **That link is a bearer credential for about an
+  hour**: whoever opens it can watch and control that session. It is sent only into the user's
+  own conversation; do not forward it.
+- **Stop.** The viewer's **Stop** button ends the session. A new browser task replaces the user's
+  last session; each user has at most one.
+- **No network-reachable VNC service.** The VNC server and its WebSocket relay listen only on
+  unix sockets inside the task, and nginx admits a viewer only with a valid signed token for that
+  session. The token's key is new for every task, so a deployment ends every session and link.
+- **Chromium runs without its sandbox**, because Fargate does not provide the kernel namespaces
+  Chromium's sandbox needs. A malicious page that exploited a Chromium flaw would therefore reach
+  the container, not just a sandboxed renderer. The mitigations: a managed browser policy, an
+  environment cleared of credentials, a task role limited to this stack's own resources, and
+  regular image updates. **Run the task in isolated subnets** ([Before you start](#3-before-you-start)),
+  and treat what the browser can reach as reachable by the web.
+- **The browser is locked down** by that policy: no extensions, no `chrome://` pages, no
+  `file://` URLs, no `devtools://` pages, no printing (so no print dialog; the agent still makes
+  PDFs), no Guest windows, no saved passwords or autofill, and new tabs open blank. It cannot open
+  the task's loopback or metadata addresses by IP. Each session has its own browser profile,
+  removed when it ends.
+
+The viewer's own states: `Open the live browser from the Open live browser button in your chat.`
+(opened without a token, as in the tab), `This browser session has ended.`, and
+`This link has expired or is not valid. Select Open live browser in the chat again.`
+
+## Other channels
+
+The bot serves every Azure Bot Service channel you enable on the Azure Bot, not only Teams.
+
+- **Test in Web Chat**, on the Azure Bot's page in the portal, works for a first test as soon as
+  the messaging endpoint is set. It shows `**Welcome! I'm NLSQL AI Employee.**` and, without
+  Gemini, `I can read documents and run tasks on a schedule.`
+- **Direct Line, and Web Chat embedded in your own site:** the site chooses each user's ID, so
+  **the embedding site is responsible for user identity**. Enable **Enhanced authentication** on
+  the Direct Line channel, with your site's origins as trusted origins, and have your server
+  exchange the Direct Line secret for a **per-user token** bound to a user ID it has authenticated.
+  Never put the Direct Line secret in a web page. Without this, any visitor can choose any ID and
+  read that user's conversation, memory and files. With per-user tokens the welcome appears
+  before the user's first message. User IDs with non-ASCII characters or spaces are refused, and
+  the user sees a generic error.
+- **Every enabled channel is open to anyone who can reach the bot there**, and every message
+  spends **your** Amazon Bedrock budget (and your Gemini quota, with Gemini on). The product has
+  no access check of its own: limit who can reach each channel (Teams to your tenant, Direct Line
+  to your authenticated site; Telegram and the like are open to whoever finds the bot), and
+  disable the channels you do not use.
+- **The Microsoft 365 features are Teams-only**: sign-in, mail, calendar, OneDrive and `/watch`.
+  On any other channel `login` gets `Microsoft 365 sign-in is available in Microsoft Teams only.`,
+  and the welcome and `/help` leave those features out.
+- **One user ID, one channel.** A user ID belongs to the first channel that used it. A message
+  from another channel with the same ID is kept apart, with its own history and files, so a
+  Direct Line client cannot read a Teams user's data by sending that user's ID.
 
 ## Troubleshooting
 
+When the container refuses to run, its last log line is `NLSQL AI Employee stopped: <reason>`
+and it exits with code **78**. The product's messages below are quoted exactly.
+
+### First launch
+
 | Symptom | Cause | Fix |
 |---|---|---|
-| Task starts then exits, repeatedly | account not subscribed, or no outbound internet access | subscribe in the deploying account; check the subnets have an internet route |
-| `CustomerNotEntitledException` in the logs | deployed into a different account from the subscription | redeploy in the subscribed account |
-| Target group never healthy | a custom task definition mapping port 80 | map container port 8080 |
-| Stack rolls back on the secret | secret in a different Region from the stack | recreate the secret in the stack's Region |
-| `Can't connect to DataBase: <...>` | a required database parameter is empty | see [Database settings by engine](#database-settings-by-engine) |
-| Bot saves but never replies | messaging endpoint is the HTTP `LoadBalancerUrl` | use the HTTPS `MessagingEndpoint` value |
-| Teams replies stop after a scale-up | conversation state is per-task | stickiness handles this; avoid changing the target group |
-| `ResourceInitializationError` fetching the secret | ExecutionRole cannot read the secret ARN | confirm `CredentialsSecretArn` is exactly the ARN from Step 1 |
+| Stack stuck in `CREATE_IN_PROGRESS` on `Service`, then `ECS Deployment Circuit Breaker was triggered` | the task keeps stopping; usually one of the rows below | see [If creation fails](#if-creation-fails). With rollback disabled, read the stopped reason and the logs (ECS console, cluster, service, **Tasks**, **Stopped**). After a rollback (`ROLLBACK_COMPLETE`) nothing is left to read: delete the stack and create it again with rollback disabled, or while following the logs |
+| Exit code 78; the log shows `AWS Marketplace: NLSQL AI Employee cannot start: this AWS account is not subscribed to NLSQL AI Employee. Subscribe on AWS Marketplace, then start the task again (exit 10).` | the deploying account is not subscribed (`CustomerNotEntitledException`) | subscribe in this account and wait a few minutes, then delete the stack and create it again |
+| Exit code 78; the log shows `AWS Marketplace: NLSQL AI Employee cannot start: <reason> (exit <n>).` with another reason | by exit code: 13 an unsupported Region; 16 the task role lacks `aws-marketplace:RegisterUsage`; 17 no task role; 18 `AWS_MARKETPLACE_PRODUCT_CODE` was edited; 19 the signature did not verify; 20 gave up after 30 minutes of network errors, or 6 hours of throttling | delete the stack and create it again from the unmodified template, in a supported Region; for 20, check the task's route to the internet |
+| Exit code 78; the last line is `NLSQL AI Employee stopped: configuration error: ENCRYPTION_KEY is missing or shorter than 32 characters` | the generated `ENCRYPTION_KEY` secret was emptied or shortened on a running stack | make its previous version current again in Secrets Manager, then force a new deployment |
+| Stopped reason `ResourceInitializationError` and `did not contain json key` | the secret lacks `AppPassword`, or `GeminiApiKey` with `GeminiFeatures=Enabled` | add the key to the secret (or choose `GeminiFeatures=Disabled`), then delete the stack and create it again; on a running stack, force a new deployment |
+| Stopped reason `ResourceInitializationError` mentioning the secret or KMS | the secret is in another Region, or uses a KMS key without `KmsKeyArn` | fix the secret or pass `KmsKeyArn`, then delete the stack and create it again; on a running stack, update it |
+| Stack fails: `NLSQL AI Employee is not supported in this Region.` | the template's Region rule | deploy in a listed Region |
+| Stack fails on vCPU limits, or a deployment never starts its second task | Fargate On-Demand vCPU quota | request at least 4 vCPU (see the service quotas in [What it costs](#2-what-it-costs)) |
+| Stack fails on `LoadBalancerSecurityGroup` with a rules-per-security-group limit | CloudFront's prefix list counts as 55 inbound rules, more than this account's quota | raise **Inbound or outbound rules per security group** to at least 55 (the default is 60) |
+
+### Running stack
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `/health` and `/api/messages` return 503 `{"status":"STARTING"}` for a minute after a task starts | the subscription check has not completed yet | normal; the container answers 503 until it passes |
+| Answers fail; at task start the log shows `NLSQL AI Employee: Bedrock probe for <model> failed (<ErrorCode>).`, for example with `AccessDeniedException` | the Claude model is not enabled in this account and Region | enable it as in [Before you start](#3-before-you-start); the task role deliberately cannot subscribe |
+| Logs show `ThrottlingException`; slow or failed answers | Bedrock tokens-per-minute or requests-per-minute quota, often from many scheduled tasks or watches at once | request a quota increase for the model's global cross-Region inference, or choose a smaller model |
+| The bot never replies | messaging endpoint not the HTTPS `MessagingEndpoint`, the Teams channel missing, or a wrong or expired client secret or tenant ID | recheck Step 3; renew the secret ([Rotating credentials](#rotating-credentials)) |
+| Logs show `[auth] rejected a request from an unexpected caller (iss=<iss>, appid=<appid>)` | something other than the Bot Connector or the bot's own app called the messaging endpoint, for example another app in your Entra tenant | nothing to fix: Teams and the other channels are not affected. If the `appid` is unexpected, find that app in Entra ID |
+| The bot replies `Sorry, I can't reach my storage right now. Please try again in a minute.` | the task cannot reach DynamoDB (network or IAM) | check the task's route to DynamoDB, and `AccessDenied` in the logs |
+| `login` gets `Microsoft 365 sign-in is available in Microsoft Teams only.` | the message came from a channel other than Teams, or from a Teams account without a Microsoft Entra identity (a consumer Teams account, GCC High or DoD, Microsoft 365 Copilot) | use the app in Teams with a work account of your tenant |
+| The sign-in page shows `AADSTS50011` (redirect URI mismatch) | the `OAuthRedirectUri` is not registered, or an old one is (the stack was re-created) | add or update it as in [Step 3](#step-3--connect-the-azure-bot-and-the-sign-in), exactly, with no trailing slash |
+| `AADSTS9002327` | the redirect URI was added as **Single-page application** | remove it there and add it under **Web** |
+| `AADSTS65001` | consent missing for the Graph permissions | grant admin consent ([Before you start](#3-before-you-start)) |
+| `AADSTS700016` or `AADSTS7000215` | wrong app ID or tenant, or an invalid or expired client secret | check `MicrosoftAppId`, `MicrosoftAppTenantId` and `AppPassword` |
+| `AADSTS50020` | the user's account is from another tenant | the app is single-tenant: sign in with an account of the bot's tenant |
+| The sign-in page shows `This sign-in link has expired or is not valid. Go back to the chat and type login to get a new one.` | the link is older than 15 minutes, or was changed | type `login` again |
+| The sign-in page shows `You signed in with a different Microsoft account than the one you use in Teams. Go back to the chat and type login, then sign in with your own account.` | the browser was signed in to another Microsoft account | sign in with the account the user has in Teams, or use a private window |
+| Mail, calendar or OneDrive fail after you changed the Graph permissions or consent | the user's stored sign-in predates the change | the user types `login` again |
+| Users are asked to sign in again | the stack was re-created, or `ENCRYPTION_KEY` was replaced; a deployment alone never does this | expected in those cases |
+| A file sent in the chat is ignored, and the log shows `Attachment download refused: <reason>` | the file host was not https on a public address, redirected, or the file is over 50 MiB; or the network has DNS64/NAT64 only | send the file again from the chat; give the task IPv4 or native IPv6 egress |
+| Saving a file from a share link to OneDrive fails | share links usually redirect, and only direct https downloads are fetched | download the file and send it in the chat instead |
+| The Browser-Use tab or the viewer says `Open the live browser from the Open live browser button in your chat.` | the tab is only a help page | select **Open live browser** on the bot's card |
+| The viewer says `This link has expired or is not valid. Select Open live browser in the chat again.` | the link is older than about an hour, belongs to an ended or replaced session, or the task was replaced | select **Open live browser** again (or ask again for a link, off Teams) |
+| The viewer keeps reconnecting, or the dialog stays blank | the session ended, a proxy or firewall blocks WebSockets (`wss://`) to `*.cloudfront.net`, or the package was built without the domain in `validDomains` | test from the user's network: `curl -i -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' https://<cloudfront-domain>/websockify/AAAAAAAAAAAAAAAAAAAAAA` should return nginx's HTML `403 Forbidden`, which means the route works and only the token is missing; a plain-text `Forbidden` comes from the load balancer (Gemini off). Rebuild the package with `build-package.sh` |
+| The agent says `Too many live browser sessions are running right now. Try again in a few minutes.` | the session cap for the task's size is reached ([Sizing](#every-parameter)) | wait, or raise `TaskMemory` and `TaskCpu` |
+| A scheduled task gets `The browser is busy with a live session right now; try again later.` | the user has a live browser session, which a scheduled task never replaces | schedule it for another time |
+| The bot offers no browsing or image reading; the log shows `Features: browser agent and image recognition are off (no GEMINI_API_KEY or GEMINI_MODEL).` | `GeminiFeatures=Disabled` | update the stack with `GeminiFeatures=Enabled` and the key in the secret, then rebuild the Teams package |
+| Browsing or image requests fail with Gemini on | the key is invalid, its project has no Gemini API, or its quota is used up; the logs show Google's error | fix the key and update the secret ([Rotating credentials](#rotating-credentials)) |
+| A scheduled task or briefing comes at the wrong hour | times are UTC | check the next run with `/tasks` |
+| Anything else returns 403 `Forbidden` | only the [public paths](#1-what-gets-deployed) are routed | by design |
 
 ## Operating the deployment
 
+### Monitoring
+
+**Is it up?** `HealthCheck` (Step 5), and target health:
+
+```shell
+TG=$(aws ecs describe-services --cluster <ClusterName> --services <ServiceName> --region <region> \
+  --query 'services[0].loadBalancers[0].targetGroupArn' --output text)
+aws elbv2 describe-target-health --target-group-arn "$TG" --region <region> \
+  --query 'TargetHealthDescriptions[].TargetHealth' --output table
+```
+
+**What did ECS do?** Service events, and why tasks stopped:
+
+```shell
+aws ecs describe-services --cluster <ClusterName> --services <ServiceName> --region <region> \
+  --query 'services[0].events[:10].[createdAt, message]' --output table
+aws ecs describe-tasks --cluster <ClusterName> --region <region> \
+  --tasks $(aws ecs list-tasks --cluster <ClusterName> --desired-status STOPPED \
+    --region <region> --query 'taskArns[:5]' --output text) \
+  --query 'tasks[].[stoppedAt, stoppedReason, containers[0].exitCode]' --output table
+```
+
+**Logs.** `aws logs tail /ecs/<stack-name> --follow --region <region>`, or these filter patterns
+in CloudWatch Logs Insights or `filter-log-events`:
+
+| Pattern | Shows |
+|---|---|
+| `"AWS Marketplace"` | subscription check and metering |
+| `"cannot start"`, `"stopped:"` | why a task refused to run |
+| `"entitlement_guard"` | why a running task was stopped |
+| `"Bedrock probe"` | whether Claude answered at task start (model access) |
+| `ThrottlingException` | Bedrock quota pressure |
+| `AccessDenied` | IAM, KMS or Bedrock model access problems |
+| `"rejected a request"` | callers of the messaging endpoint other than the Bot Connector and the bot's own app |
+| `"Attachment download"` | files sent in the chat that could not be downloaded |
+| `"Features:"` | which optional features are off |
+| `"[agent] tool:"` | which tools the agent called (names only) |
+| `ERROR` | everything else worth a look |
+
+Useful alarms: ALB `UnHealthyHostCount` above 0 and `HTTPCode_Target_5XX_Count`, ECS
+`CPUUtilization` and `MemoryUtilization` above 80%, CloudFront `5xxErrorRate`.
+
+**What is logged, and what is not.** Logs go to CloudWatch Logs for 14 days. They hold start-up
+and error lines, the names of the tools the agent called (`[agent] tool: <name>`, never their
+arguments), and one access line per request with the path but **no query string**, so sign-in
+codes and viewer tokens are never written. Secrets, tokens and request headers are never
+logged, and the start-up lines name the settings they ignore, never their values. Every log
+line, from every process, also passes through a redactor that replaces credentials paths, OAuth
+codes and states, viewer tokens and Bearer values with `[redacted]`. Conversation content is not
+logged: the template sets `DEBUG` to `false` and offers no parameter to change it.
+
 ### What the IAM roles are for
 
-**ExecutionRole** pulls the Marketplace image, writes to CloudWatch Logs, and calls
-`secretsmanager:GetSecretValue` on exactly the one secret ARN you supply — nothing else.
+**ExecutionRole** is used by ECS itself, not by the application:
 
-**TaskRole** is the running container's own role. It grants only
-`aws-marketplace:RegisterUsage`, so the task can verify your subscription and report the
-hours it runs. Its `Resource` is `*` because `RegisterUsage` takes no resource ARN.
+| Permission | Purpose |
+|---|---|
+| `AmazonECSTaskExecutionRolePolicy` (AWS managed) | pull the image from the Marketplace ECR repository and write container logs |
+| `secretsmanager:GetSecretValue` on your secret and on the generated `ENCRYPTION_KEY` secret | inject them at task start |
+| `kms:Decrypt` on `KmsKeyArn`, only through Secrets Manager (only if set) | decrypt your secret encrypted with your key |
 
-### Where your sensitive data lives
+**TaskRole** is the running application's only AWS identity. The application uses the ECS task
+role, and every other AWS credential setting is ignored on ECS, so these are the only AWS
+permissions it uses:
 
-Only in the Secrets Manager secret you create, encrypted at rest by AWS Secrets Manager with
-its KMS key. The template creates no KMS keys of its own. Your database is queried from
-inside your own network and its contents are not sent to NLSQL or to AWS.
+| Permission | Purpose |
+|---|---|
+| `aws-marketplace:RegisterUsage` on `*` | verify the subscription and meter the task; the action takes no resource ARN |
+| `bedrock:InvokeModel`, `bedrock:InvokeModelWithResponseStream` on Anthropic foundation models and this account's `global.anthropic.*` inference profiles | call Claude; no model subscription or management |
+| `dynamodb:DescribeTable`, `GetItem`, `PutItem`, `UpdateItem`, `DeleteItem`, `Query`, `Scan` on the stack's two tables | users' sign-ins, scheduled tasks and conversation references; no table creation |
+| `s3:ListBucket` on the stack's two buckets, `s3:GetObject`, `PutObject`, `DeleteObject` on their objects | users' files, memory and conversation history; no bucket creation |
+
+### Where your sensitive data lives, and how it is encrypted
+
+| Data | Where | At rest | In transit |
+|---|---|---|---|
+| Bot client secret, Gemini key | your Secrets Manager secret; environment variables inside the running task | AWS KMS (`aws/secretsmanager`, or your `KmsKeyArn`) | TLS |
+| `ENCRYPTION_KEY` | the stack's generated secret; inside the running task | AWS KMS (`aws/secretsmanager`) | TLS |
+| Per-task keys (bot to server, viewer tokens) | the task's memory only, new at every start | — | — |
+| Microsoft 365 sign-ins: refresh token, name, display name, email address, Entra object ID | `UsersTableName`, one `UserData` item per user | the refresh token is encrypted (Fernet) with a key derived from `ENCRYPTION_KEY`, inside DynamoDB's own encryption | TLS |
+| Scheduled tasks, briefings and watches (their text and schedule) | `TasksTableName`, `ActiveTasks` items | DynamoDB encryption | TLS |
+| Conversation references (the user's ID and name as the channel gives them, the conversation and the channel) | `TasksTableName`, one `UserReferences` item per user | DynamoDB encryption | TLS |
+| Conversation history | `ConversationsBucketName`, `<user>.json` per user, summarized as it grows | SSE-S3 (AES-256) | HTTPS; the buckets deny non-TLS requests |
+| Long-term memory and files | Teams, signed in: the user's OneDrive folder **AI Employee Uploads**; otherwise `UploadsBucketName` under `<user>/` | OneDrive's encryption; SSE-S3 | HTTPS |
+| Files sent in the chat, marked-up images | the task's disk under the user's folder, deleted after at most 24 hours untouched, or when the task ends | Fargate ephemeral storage, AES-256 with AWS-managed keys | TLS from the channel's file host |
+| Live browser sessions (pages, cookies, downloads) | the task's memory and disk, removed when the session ends | Fargate ephemeral storage | — |
+| Prompts to Claude: the conversation, memory, and what tools read, such as email, calendar entries and documents | Amazon Bedrock; a global profile may process a request in any commercial AWS Region. Per AWS, Bedrock does not use prompts or answers to train models or share them with model providers | not stored by Bedrock | HTTPS |
+| Pages and images for Gemini (Gemini only) | Google, under your key's terms ([data note](#the-optional-gemini-features)) | Google's | HTTPS |
+| Logs | CloudWatch Logs, 14 days; no secrets, tokens, query strings or conversation content | CloudWatch Logs service encryption | TLS |
+
+All of this is **personal data** of your users: names, email addresses, mail and calendar
+content passed to the model, conversations and files. It stays in your AWS account, your
+Microsoft 365 tenant and, with Gemini, Google; NLSQL receives none of it. **Keys.** The template
+creates no KMS keys. The only key in the image is AWS Marketplace's public key for checking the
+`RegisterUsage` signature; it is public.
+
+### Data retention and deletion
+
+- **What a user can clear:** `refresh` deletes that user's conversation history (the snapshot in
+  the conversations bucket) and starts fresh. Scheduled tasks are removed by asking the bot, and
+  the briefing and watches with `/briefing off` and `/watch off`.
+- **What the task clears by itself:** files sent in the chat after at most 24 hours untouched; a
+  user's in-memory session after an hour idle (the history stays in the bucket); live browser
+  sessions when they end.
+- **The tables and buckets are kept when the stack is deleted** (`RetainExceptOnCreate`), and
+  keep costing until you delete them. **Point-in-time recovery keeps 35 days** of each table's
+  history, so a deleted item can be restored for 35 days, and DynamoDB keeps a backup of a table
+  with point-in-time recovery for 35 days after the table is deleted.
+- **Deleting one user's data.** Find the user's ID (a Teams ID starts with `29:`; underscores are
+  stored as hyphens) in the `UserReferences` items of `TasksTableName`, then:
+
+  ```shell
+  # the sign-in: the RowKey is the user's Entra object ID
+  aws dynamodb delete-item --table-name <UsersTableName> --region <region> \
+    --key '{"PartitionKey":{"S":"UserData"},"RowKey":{"S":"<entra-object-id>"}}'
+  # scheduled tasks, briefings and watches: every ActiveTasks item with that UserID
+  aws dynamodb query --table-name <TasksTableName> --region <region> \
+    --key-condition-expression 'PartitionKey = :p' --filter-expression 'UserID = :u' \
+    --expression-attribute-values '{":p":{"S":"ActiveTasks"},":u":{"S":"<user-id>"}}' \
+    --query 'Items[].RowKey.S' --output text
+  aws dynamodb delete-item --table-name <TasksTableName> --region <region> \
+    --key '{"PartitionKey":{"S":"ActiveTasks"},"RowKey":{"S":"<row-key>"}}'   # for each
+  # history, memory and files
+  aws s3 rm "s3://<ConversationsBucketName>/<user-id>.json" --region <region>
+  aws s3 rm "s3://<UploadsBucketName>/<user-id>/" --recursive --region <region>
+  ```
+
+  A user who reached the bot from a second channel under an ID another channel already held is
+  stored as `<channel>:<user-id>` (for example `directline:<user-id>`): run the same `ActiveTasks`
+  query and the two `s3 rm` commands for that ID too (`<channel>:<user-id>.json` and
+  `<channel>:<user-id>/`).
+
+  Delete the user's OneDrive folder **AI Employee Uploads** in Microsoft 365 if wanted. The
+  `UserReferences` item is what keeps another channel from taking over the user's ID: delete it
+  (`PartitionKey` `UserReferences`, `RowKey` the user ID) only for a user who has left for good,
+  then force a new deployment, because the bot caches it while it runs. The deleted items stay
+  restorable through point-in-time recovery for 35 days.
+- **Deleting everything:** see [Uninstalling](#uninstalling).
 
 ### Rotating credentials
 
-Update the secret value, then force a new deployment so running tasks pick it up:
+The container reads the secrets only at task start, so every rotation ends with a new deployment,
+which interrupts conversations in progress for a minute and ends live browser sessions.
+Secrets Manager automatic rotation is not configured. `put-secret-value` replaces the whole JSON,
+so write every key into the file again.
+
+1. **Bot client secret:** Entra client secrets expire (at most 24 months). Before the expiry date,
+   add a new secret to the bot's app registration (**Microsoft Entra ID**, **App
+   registrations**, the bot app, **Certificates & secrets**). An expired secret stops all replies
+   and sign-ins.
+2. **Gemini key:** create a new key in Google AI Studio.
+3. Update the secret and start a new task:
+
+   ```shell
+   (umask 077; cat > secret.json <<'EOF'
+   {"AppPassword":"<bot-client-secret>","GeminiApiKey":"<gemini-api-key>"}
+   EOF
+   )
+   aws secretsmanager put-secret-value --secret-id nlsql-ai-employee/credentials \
+     --secret-string file://secret.json --region <region>
+   rm secret.json
+   aws ecs update-service --cluster <ClusterName> --service <ServiceName> \
+     --force-new-deployment --region <region>
+   ```
+
+4. Once the new task is healthy and answering, delete the old client secret or key.
+
+**`ENCRYPTION_KEY`: never rotate it** unless it was exposed. A new key makes every stored sign-in
+unreadable, so every user must type `login` again; nothing else is lost. If you must, store 64
+lowercase hex characters as a plain string (not JSON, and without a trailing newline), then
+force a new deployment:
 
 ```shell
-aws secretsmanager put-secret-value --secret-id nlsql/credentials \
-  --secret-string '{"ApiToken":"<new>","DbPassword":"<new>","AppPassword":"<new>"}' --region us-east-1
-aws ecs update-service --cluster nlsql --service <service-name> --force-new-deployment --region us-east-1
+aws secretsmanager put-secret-value --secret-id <EncryptionKeySecretArn> \
+  --secret-string "$(openssl rand -hex 32)" --region <region>
+aws ecs update-service --cluster <ClusterName> --service <ServiceName> \
+  --force-new-deployment --region <region>
 ```
+
+The per-task keys need no rotation: every task makes new ones.
+
+### Backup and recovery
+
+- **Tables:** point-in-time recovery restores a table to any second of the last 35 days, into a
+  **new** table (`aws dynamodb restore-table-to-point-in-time`). The stack cannot be pointed at
+  another table, so copy the items you need back into the stack's table.
+- **Buckets:** not versioned by the template. To recover overwritten or deleted objects, turn on
+  S3 Versioning or protect the buckets with AWS Backup.
+- **In the task:** sessions, live browsers and chat files are transient by design.
+- **Credentials:** Secrets Manager keeps previous versions of your secret; a deleted secret can be
+  restored during its recovery window.
+- **Recovering the whole deployment:** a new stack creates new, empty tables and buckets and a
+  new `ENCRYPTION_KEY`, and gets a new CloudFront domain: repeat Steps 3 and 4, and users sign in
+  again. Data in the old, retained tables and buckets can be copied over.
 
 ### Scaling
 
-Raise `DesiredCount` with a stack update. Every task beyond the first is billed at the hourly
-rate immediately, including during the free trial. Conversation state lives in the task, so
-the target group uses `lb_cookie` stickiness to keep a conversation on one task.
+Vertical only. The service always runs exactly one task (see
+[Why exactly one task](#1-what-gets-deployed)). For more capacity, especially more concurrent live
+browsers, update the stack with a larger `TaskMemory`, `TaskCpu` or `EphemeralStorage`. Answer
+throughput beyond that is set by your Bedrock quotas.
 
 ### Upgrading
 
-Update the stack with a new `ImageUri`, or re-upload a newer template from the listing. ECS
-replaces tasks with a rolling deployment.
+Read the new version's release notes, then update the stack with the new version's template,
+which carries the new `ImageUri` default. Keep every other parameter with `UsePreviousValue=true`,
+but not `ImageUri`: a kept value is the old image, and only an omitted parameter takes the new
+default. Omit `ImageUri`, or pass the new image explicitly:
+
+```shell
+aws cloudformation update-stack --stack-name nlsql-ai-employee --region <region> \
+  --template-body file://nlsql-ai-employee-ecs-fargate.yaml --capabilities CAPABILITY_IAM \
+  --parameters ParameterKey=VpcId,UsePreviousValue=true ... \
+    ParameterKey=ImageUri,ParameterValue=709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee:<new-version>
+```
+
+(one `UsePreviousValue=true` per parameter other than `ImageUri`). In the console, choose
+**Update**, **Replace current template**, upload the new template, and overwrite the pre-filled
+`ImageUri` with the new image. Changing only `ImageUri` with the current template is enough only
+when the release notes say the template did not change.
+
+ECS starts the new task, waits for it to pass health checks, then stops the old one (with
+`TaskCpu=4096`, the other way round); a failing new version rolls back automatically. The
+tables, buckets and `ENCRYPTION_KEY` carry over, so users stay signed in and keep their history,
+memory and tasks. Conversations in progress and live browser sessions end. Rebuild the Teams
+package only if the release notes say so.
 
 ### Uninstalling
 
 ```shell
-aws cloudformation delete-stack --stack-name nlsql --region us-east-1
-aws cloudformation wait stack-delete-complete --stack-name nlsql --region us-east-1
-aws secretsmanager delete-secret --secret-id nlsql/credentials --region us-east-1
+aws cloudformation delete-stack --stack-name nlsql-ai-employee --region <region>
+aws cloudformation wait stack-delete-complete --stack-name nlsql-ai-employee --region <region>
+aws secretsmanager delete-secret --secret-id nlsql-ai-employee/credentials --region <region>
 ```
 
-Then unsubscribe in AWS Marketplace. The log group is deleted with the stack. Remember to
-clear the messaging endpoint on your Azure Bot resource, since the CloudFront domain is gone.
+The stack's generated `ENCRYPTION_KEY` is deleted with it, so the sign-ins left in the retained
+table can no longer be decrypted. The **two tables and two buckets are kept**, with your users'
+data, and keep costing. To remove them, with the names from the stack's outputs (note them
+before deleting the stack, or find them in the DynamoDB and S3 consoles by the stack's name):
+
+```shell
+aws dynamodb delete-table --table-name <UsersTableName> --region <region>
+aws dynamodb delete-table --table-name <TasksTableName> --region <region>
+aws s3 rm s3://<UploadsBucketName> --recursive --region <region>
+aws s3api delete-bucket --bucket <UploadsBucketName> --region <region>
+aws s3 rm s3://<ConversationsBucketName> --recursive --region <region>
+aws s3api delete-bucket --bucket <ConversationsBucketName> --region <region>
+```
+
+The log group is deleted with the stack. Then cancel the subscription in AWS Marketplace, clear
+the messaging endpoint on your Azure Bot (or delete the bot), remove the redirect URI and the
+Graph permissions from the app registration, delete the users' **AI Employee Uploads** OneDrive
+folders if wanted, and remove the Teams app.
+
+## External dependencies
+
+This product requires an ongoing internet connection. The following ongoing external services
+are required to properly function:
+
+- **AWS:** AWS Marketplace Metering Service, Amazon Bedrock, Amazon DynamoDB, Amazon S3, AWS
+  Secrets Manager, Amazon CloudWatch Logs, Amazon CloudFront and Amazon ECR.
+- **Microsoft:** a Microsoft Azure subscription for the Azure Bot resource (the standard Microsoft
+  Teams channel is free), Microsoft Entra ID, the Microsoft Bot Framework Bot Connector, Microsoft
+  Graph (the Microsoft 365 features, in Teams), and the Microsoft Teams and SharePoint file hosts
+  that files sent to the bot are downloaded from. Any other Bot Service channel you enable adds
+  its own service (for example Telegram).
+
+Optional:
+
+- **Google Gemini API**, only with `GeminiFeatures=Enabled`, with your own key: the browser agent
+  and image reading ([data note](#the-optional-gemini-features)). With Gemini on, the browser
+  agent also visits the public websites its tasks need.
+- In Teams, the live browser's viewer page loads the Microsoft Teams JavaScript SDK from
+  `res.cdn.office.net` in the user's browser.
+
+Nothing is downloaded at run time: the browser, the viewer and the chat cards' images are part
+of the image.
+
+This product extends the functionality of Microsoft Teams and without it, this product has very
+limited utility. Please note that Microsoft Teams might require its own license for full
+functionality with this listing.
 
 ## Support
 

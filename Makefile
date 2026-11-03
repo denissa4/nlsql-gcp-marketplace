@@ -20,6 +20,7 @@ APP_BRANCH   := aws-marketplace-offer
 
 IMAGE    := $(ECR_REGISTRY)/$(ECR_REPO)
 TEMPLATE := cloudformation/nlsql-ai-employee-ecs-fargate.yaml
+GUIDE    := docs/aws-deployment-guide.md
 
 # Trust anchor baked into the image (marketplace/aws_marketplace.py).
 PRODUCT_CODE := f5jcvx1rl6wb66fhzy5qycpnr
@@ -51,7 +52,7 @@ help:
 	  | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: check-vars
-check-vars: ## Template and application agree on the image and product code
+check-vars: ## Template, guide and application agree on the image, product code and messages
 	@test "$(ECR_REPO)" != "ECR_REPO" \
 	  || (echo "ERROR: set ECR_REPO to the repository created in the Marketplace portal" && exit 1)
 	@# The template's ImageUri default is what buyers launch with, so it must
@@ -70,7 +71,18 @@ check-vars: ## Template and application agree on the image and product code
 	else \
 	  echo "  (no application checkout at $(APP_REPO); baked product code not compared)"; \
 	fi
-	@echo "  template agrees on $(IMAGE):$(VERSION), product $(PRODUCT_CODE)"
+	@grep -qF '$(IMAGE):$(VERSION)' $(GUIDE) \
+	  || (echo "ERROR: $(GUIDE) does not name $(IMAGE):$(VERSION)" && exit 1)
+	@grep -qF 'Applies to NLSQL AI Employee **$(VERSION)**' $(GUIDE) \
+	  || (echo "ERROR: $(GUIDE) does not say it applies to $(VERSION)" && exit 1)
+	@$(MAKE) --no-print-directory guide-check
+	@echo "  template and guide agree on $(IMAGE):$(VERSION), product $(PRODUCT_CODE)"
+
+.PHONY: guide-check
+guide-check: ## Offline: the guide's Regions, models, parameters, outputs and links; with the app, its quoted messages
+	@$(if $(APP_ARG),test -d "$(APP_REPO)" || { echo "ERROR: no application checkout at $(APP_REPO)"; exit 1; };,echo \
+	    "  (no application checkout at $(APP_REPO); quoted messages not compared)";) \
+	  python3 scripts/guide-check.py --guide $(GUIDE) --template $(TEMPLATE) $(APP_ARG)
 
 .PHONY: template-invariants
 template-invariants: ## Offline: env names, path allowlist, key schema, Regions, size, ENCRYPTION_KEY pin, models
@@ -79,7 +91,7 @@ template-invariants: ## Offline: env names, path allowlist, key schema, Regions,
 	  $(call with-cfn-lint,python3 scripts/template-invariants.py --template $(TEMPLATE) $(APP_ARG))
 
 .PHONY: test-scripts
-test-scripts: ## Offline unit tests: template invariants (each fails on a planted defect), teams/build-package.sh
+test-scripts: ## Offline unit tests: template invariants and guide checks (each fails on a planted defect), teams/build-package.sh
 	@$(call with-cfn-lint,$(if $(APP_ARG),APP_REPO=$(APP_REPO) )python3 -m unittest discover -s scripts -p "test_*.py")
 
 .PHONY: validate

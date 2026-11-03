@@ -24,6 +24,17 @@ GITHUB_REPO  ?= denissa4/nlsql-gcp-marketplace
 TEST_REPO    ?= nlsql-ai-employee-test
 TEST_TAG     ?= $(VERSION)-rc1
 
+# Seller-account test stack (scripts/deploy-test.sh, scripts/destroy-test.sh),
+# deployed from TEST_TAG in the private repository above. GEMINI=on or off;
+# empty means on when the env file has GEMINI_API_KEY. LANGUAGE_MODEL and
+# GEMINI_MODEL override the env file's MODEL_NAME and GEMINI_MODEL.
+ENV_FILE       ?=
+GEMINI         ?=
+STACK_NAME     ?= nlsql-ai-employee-test
+LANGUAGE_MODEL ?=
+GEMINI_MODEL   ?=
+PURGE_DATA     ?=
+
 # Checkout of the application on branch aws-marketplace-offer, to compare the
 # baked product code and key, the model list and the env contract. Any
 # checkout found there must be on that branch. The default is skipped when
@@ -126,6 +137,13 @@ check-vars: ## Template, listing, guide and application agree on the image, prod
 	  || (echo "ERROR: $(GUIDE) does not name $(IMAGE):$(VERSION)" && exit 1)
 	@grep -qF 'Applies to NLSQL AI Employee **$(VERSION)**' $(GUIDE) \
 	  || (echo "ERROR: $(GUIDE) does not say it applies to $(VERSION)" && exit 1)
+	@# deploy-test.sh rewrites the ImageUri pattern by exact string, and
+	@# defaults to this version.
+	@pattern=$$(sed -n 's/^marketplace = r"\(.*\)"$$/\1/p' scripts/deploy-test.sh); \
+	  test -n "$$pattern" && grep -qF "AllowedPattern: '^$$pattern\$$'" $(TEMPLATE) \
+	  || (echo "ERROR: the ImageUri pattern in scripts/deploy-test.sh is not the one in $(TEMPLATE)" && exit 1)
+	@grep -qF 'VERSION="$${VERSION:-$(VERSION)}"' scripts/deploy-test.sh \
+	  || (echo "ERROR: VERSION's default in scripts/deploy-test.sh is not $(VERSION)" && exit 1)
 	@$(MAKE) --no-print-directory guide-check
 	@echo "  template, listing and guide agree on $(IMAGE):$(VERSION), product $(PRODUCT_CODE)"
 
@@ -142,7 +160,7 @@ template-invariants: ## Offline: env names, path allowlist, key schema, Regions,
 	  $(call with-cfn-lint,python3 scripts/template-invariants.py --template $(TEMPLATE) $(APP_ARG))
 
 .PHONY: test-scripts
-test-scripts: ## Offline unit tests: template invariants, guide and listing checks (each fails on a planted defect), teams/build-package.sh, push-guard
+test-scripts: ## Offline unit tests: template invariants, guide and listing checks (each fails on a planted defect), teams/build-package.sh, push-guard, the test-stack scripts
 	@$(call with-cfn-lint,$(if $(APP_ARG),APP_REPO=$(APP_REPO) )python3 -m unittest discover -s scripts -p "test_*.py")
 
 .PHONY: validate
@@ -299,3 +317,13 @@ no-secrets: ## Fail if a credential or account ID is committed, now or in histor
 	    if git ls-files --error-unmatch $$f >/dev/null 2>&1; then echo "ERROR: $$f is tracked" && exit 1; fi; \
 	  done; \
 	  echo "  no credential-shaped strings or account IDs found"
+
+.PHONY: deploy-test
+deploy-test: ## Seller test stack (us-east-1) from a local env file: ENV_FILE=<path> [GEMINI=on|off] [LANGUAGE_MODEL=] [GEMINI_MODEL=]
+	@test -n "$(ENV_FILE)" || (echo "ERROR: ENV_FILE=<path to local env file> is required" && exit 1)
+	VERSION=$(VERSION) TEST_TAG=$(TEST_TAG) AWS_REGION=$(AWS_REGION) STACK_NAME="$(STACK_NAME)" GEMINI="$(GEMINI)" \
+	  LANGUAGE_MODEL="$(LANGUAGE_MODEL)" GEMINI_MODEL="$(GEMINI_MODEL)" scripts/deploy-test.sh "$(ENV_FILE)"
+
+.PHONY: destroy-test
+destroy-test: ## Delete the seller test stack and its secret; PURGE_DATA=1 also deletes its kept tables and buckets
+	AWS_REGION=$(AWS_REGION) STACK_NAME="$(STACK_NAME)" PURGE_DATA="$(PURGE_DATA)" scripts/destroy-test.sh

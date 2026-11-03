@@ -24,16 +24,20 @@ GITHUB_REPO  ?= denissa4/nlsql-gcp-marketplace
 TEST_REPO    ?= nlsql-ai-employee-test
 TEST_TAG     ?= $(VERSION)-rc1
 
-# Seller-account test stack (scripts/deploy-test.sh, scripts/destroy-test.sh),
-# deployed from TEST_TAG in the private repository above. GEMINI=on or off;
-# empty means on when the env file has GEMINI_API_KEY. LANGUAGE_MODEL and
-# GEMINI_MODEL override the env file's MODEL_NAME and GEMINI_MODEL.
+# Seller-account test stack (scripts/deploy-test.sh, scripts/e2e-test.py,
+# scripts/destroy-test.sh), deployed from TEST_TAG in the private repository
+# above. GEMINI=on or off; empty means on when the env file has GEMINI_API_KEY.
+# LANGUAGE_MODEL and GEMINI_MODEL override the env file's MODEL_NAME and
+# GEMINI_MODEL. E2E_ARGS goes to scripts/e2e-test.py as is: --skip-schedule,
+# --restart-probe, --ws-idle <seconds>, --keep-capture. A Teams sign-in link
+# goes in LOGIN_URL='<url>', never in E2E_ARGS.
 ENV_FILE       ?=
 GEMINI         ?=
 STACK_NAME     ?= nlsql-ai-employee-test
 LANGUAGE_MODEL ?=
 GEMINI_MODEL   ?=
 PURGE_DATA     ?=
+E2E_ARGS       ?=
 
 # Checkout of the application on branch aws-marketplace-offer, to compare the
 # baked product code and key, the model list and the env contract. Any
@@ -160,7 +164,7 @@ template-invariants: ## Offline: env names, path allowlist, key schema, Regions,
 	  $(call with-cfn-lint,python3 scripts/template-invariants.py --template $(TEMPLATE) $(APP_ARG))
 
 .PHONY: test-scripts
-test-scripts: ## Offline unit tests: template invariants, guide and listing checks (each fails on a planted defect), teams/build-package.sh, push-guard, the test-stack scripts
+test-scripts: ## Offline unit tests: template invariants, guide and listing checks (each fails on a planted defect), teams/build-package.sh, push-guard, the test-stack scripts, e2e-test.py
 	@$(call with-cfn-lint,$(if $(APP_ARG),APP_REPO=$(APP_REPO) )python3 -m unittest discover -s scripts -p "test_*.py")
 
 .PHONY: validate
@@ -324,6 +328,15 @@ deploy-test: ## Seller test stack (us-east-1) from a local env file: ENV_FILE=<p
 	VERSION=$(VERSION) TEST_TAG=$(TEST_TAG) AWS_REGION=$(AWS_REGION) STACK_NAME="$(STACK_NAME)" GEMINI="$(GEMINI)" \
 	  LANGUAGE_MODEL="$(LANGUAGE_MODEL)" GEMINI_MODEL="$(GEMINI_MODEL)" scripts/deploy-test.sh "$(ENV_FILE)"
 
+.PHONY: e2e-test
+# The Teams sign-in link reaches the script through the environment only: its
+# '&'s would cut a shell line, and make would echo its signed state
+e2e-test: export LOGIN_URL := $(value LOGIN_URL)
+e2e-test: ## Drive the test stack like Teams does: ENV_FILE=<path> [E2E_ARGS="--skip-schedule --restart-probe --ws-idle 120"] [LOGIN_URL='<url>']
+	@test -n "$(ENV_FILE)" || (echo "ERROR: ENV_FILE=<path to local env file> is required" && exit 1)
+	python3 scripts/e2e-test.py "$(ENV_FILE)" --stack "$(STACK_NAME)" --region $(AWS_REGION) $(E2E_ARGS)
+
 .PHONY: destroy-test
-destroy-test: ## Delete the seller test stack and its secret; PURGE_DATA=1 also deletes its kept tables and buckets
+destroy-test: ## Delete the seller test stack, its secret and the e2e capture function; PURGE_DATA=1 also deletes its kept tables and buckets
+	-python3 scripts/e2e-test.py --teardown --stack "$(STACK_NAME)" --region $(AWS_REGION)
 	AWS_REGION=$(AWS_REGION) STACK_NAME="$(STACK_NAME)" PURGE_DATA="$(PURGE_DATA)" scripts/destroy-test.sh

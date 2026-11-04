@@ -64,10 +64,11 @@ LISTING_PRODUCT  := listing/product
 # Trust anchors baked into the image. `push` refuses anything else; `override`
 # keeps a command-line value from changing what the guards expect.
 override PRODUCT_CODE  := f5jcvx1rl6wb66fhzy5qycpnr
-# sha256 of RegisterUsage public key version 1, from the product entity. Empty
-# until AWS issues it: the image meanwhile bakes a placeholder key that no task
-# can run with, and push-guard refuses both.
-override PUBKEY_SHA256 :=
+# sha256 of RegisterUsage public key version 1, from the product entity
+# (DescribeEntity: SignatureVerificationKeys, PublicKeyVersion 1), over the
+# PEM exactly as the app bakes it (marketplace/aws_marketplace_pubkey_v1.pem,
+# app commit B11). push-guard refuses any other key, the placeholder included.
+override PUBKEY_SHA256 := 68f9c9b44a3bf144a3292718879681231ab20719386792c8aa2559c82f86d2c1
 
 # cfn-lint, which also supplies template-invariants' YAML loader: from PATH
 # when python3 can import it, else installed in PYTHON_IMAGE. With an image

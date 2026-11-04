@@ -49,9 +49,9 @@ with each user's Microsoft 365 mail, calendar and OneDrive.
 |---|---|
 | Product ID | `prod-m37urirlvp7mw` |
 | Product code | `f5jcvx1rl6wb66fhzy5qycpnr` |
-| RegisterUsage public key version | `1`, **not issued yet** (prerequisite 3) |
-| Public key | baked by the app as `marketplace/aws_marketplace_pubkey_v1.pem`. Until app item B11 replaces it, that file is a placeholder (sha256 `c0dc17d4a034c0f42d73a806bd6b0449c5ad3a18d307db14528579160829ae5b`) that no task can run with, and the Makefile's `PUBKEY_SHA256` is empty, so `push` and `push-test` refuse |
-| ECR repository | `709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee`, **to be added** in the portal (prerequisite 2) |
+| RegisterUsage public key version | `1` (Active in the product entity's `SignatureVerificationKeys`) |
+| Public key | baked by the app as `marketplace/aws_marketplace_pubkey_v1.pem` (app item B11), sha256 `68f9c9b44a3bf144a3292718879681231ab20719386792c8aa2559c82f86d2c1`, the Makefile's `PUBKEY_SHA256`. `push` and `push-test` refuse any other key, including the app's earlier placeholder (sha256 `c0dc17d4a034c0f42d73a806bd6b0449c5ad3a18d307db14528579160829ae5b`) |
+| ECR repository | `709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee` (in the product entity's `Repositories`) |
 | Current version | `1.0.0` (local tag `ai-employee-aws:1.0.0`) |
 
 ## Layout
@@ -244,9 +244,9 @@ repositories** (prerequisite 2); `nlsql/ai-agent` and `nlsql/nlsql` belong to th
 
 ## Testing in the seller account
 
-Nothing here has run against AWS yet. Every ECS task exits 19 (bad signature, container 78) until
-the app bakes public key v1 (B11), and `push-guard` refuses the placeholder key, so the tests
-below start after B11 and prerequisite 3.
+The app bakes public key v1 since B11, and `PUBKEY_SHA256` pins it, so `push-guard` accepts the
+release image. An image that still bakes the placeholder key exits 19 on every ECS task (bad
+signature, container 78), and `push-guard` refuses it.
 
 AWS requires a test task in us-east-1. Push the enforce image to a **private** test repository
 (`<account>.dkr.ecr.us-east-1.amazonaws.com/nlsql-ai-employee-test:<tag>`) rather than the
@@ -424,10 +424,10 @@ the org catalog. Then, on Teams desktop, web and mobile:
 
 - [ ] Rotate the bot's Direct Line secret (prerequisite 1): Azure Bot, Channels, Direct Line,
       regenerate.
-- [ ] Add the Marketplace repository `nlsql/ai-employee` to `prod-m37urirlvp7mw` (prerequisite 2):
+- [x] Add the Marketplace repository `nlsql/ai-employee` to `prod-m37urirlvp7mw` (prerequisite 2):
       **Server products, Request changes, Add repositories**. The name is permanent and unique
       across the seller account.
-- [ ] Obtain RegisterUsage public key v1 for `prod-m37urirlvp7mw` from the product entity, the
+- [x] Obtain RegisterUsage public key v1 for `prod-m37urirlvp7mw` from the product entity, the
       same way as for the AI Agent (prerequisite 3). App item **B11** bakes it as
       `marketplace/aws_marketplace_pubkey_v1.pem` and flips the placeholder tests; then set
       `PUBKEY_SHA256` in the Makefile and run `make check-vars`.

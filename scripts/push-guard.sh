@@ -9,8 +9,8 @@
 #                    (run there as `make build IMAGE_LOCAL=<local-image>`)
 #   <product-code>   the product code every trust anchor must name
 #   <pubkey-sha256>  the sha256 of RegisterUsage public key version 1, from the
-#                    Makefile's PUBKEY_SHA256. Empty until the product entity
-#                    has issued the key, and then the image is refused.
+#                    Makefile's PUBKEY_SHA256. Empty or not a sha256: the
+#                    image is refused.
 #   <version>        the release being pushed, the Makefile's VERSION; when
 #                    given, the org.opencontainers.image.version label must
 #                    equal it

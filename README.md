@@ -289,7 +289,13 @@ the scripts refuse a tracked file). `deploy-test` writes the secret through a 06
 deploys into the default VPC unless `VPC_ID`/`SUBNET_IDS` are set, and tags everything
 `nlsql:purpose=test`; `destroy-test` refuses anything without that tag. The seller account's
 Bedrock model access decides which `LanguageModel` a run can use: `LANGUAGE_MODEL=<allowed value>`
-overrides it.
+overrides it. A model is usable only once the account has its Bedrock Marketplace agreement:
+`aws bedrock get-foundation-model-availability --model-id anthropic.<model>` must show
+`agreementAvailability` `AVAILABLE`. Bedrock creates the agreement on a first call by an identity
+allowed `aws-marketplace:Subscribe`, which the task role is not; without it the start-up probe can
+still log `succeeded` (the first call gets through while Bedrock subscribes) and every later turn
+is denied (`ConverseStream ... not authorized to perform the required AWS Marketplace actions`).
+The env file's `STREAMING` sets the `Streaming` parameter.
 
 `e2e-test` (`scripts/e2e-test.py`) exercises the stack the way Microsoft Teams does, with no Teams
 tenant: a temporary Lambda function URL stands in for the Bot Connector, and each Teams-shaped
@@ -344,8 +350,9 @@ The configuration half of T6: register a copy of `$td` under a `-t6` family with
 `registeredAt` and `registeredBy`, then `register-task-definition` with the test tag), run one
 task from it with the normal role, and expect exit 78 and
 `NLSQL AI Employee stopped: configuration error: ENCRYPTION_KEY is missing or shorter than 32 characters`;
-then `deregister-task-definition` and only then `delete-task-definitions`. These commands have
-not been run on AWS yet.
+then `deregister-task-definition` and only then `delete-task-definitions`. Both halves ran on
+2026-11-04 (see the test record). Run T6 last: its tasks log `cannot start:` into the stack's log
+group, which a later `e2e-test` counts as a boot error of the stack.
 
 **Manual Teams test** (seller tenant, after `e2e-test` passes), the final step: paste the
 `MessagingEndpoint` output into the Azure Bot, add the `OAuthRedirectUri` output to the app
@@ -377,12 +384,19 @@ the org catalog. Then, on Teams desktop, web and mobile:
 
 | Test | Status |
 |---|---|
-| T1: test stack in us-east-1, entitled run (`AWS Marketplace: entitlement verified for NLSQL AI Employee ...`) | not run (needs B11) |
-| T6: no `RegisterUsage` gives exit 78 and `(exit 16)`; no `ENCRYPTION_KEY` gives exit 78 and `configuration error` | not run |
-| e2e, GEMINI=off | not run |
-| e2e, GEMINI=on, with S4 (WSS idle 900 s) and S7 (the Gemini model's browser task and `read_image`) | not run |
-| e2e, GEMINI=on, `STREAMING=true` and `--restart-probe` | not run |
-| S1: one real Converse call per `LanguageModel` value | not run |
+All runs on 2026-11-04 in the seller account, us-east-1, image `1.0.0-rc1` (digest
+`sha256:d53f1458…02d1`, the same as the Marketplace `1.0.0`), `LanguageModel`
+`global.anthropic.claude-opus-5-5`.
+
+| Test | Status |
+|---|---|
+| T1: test stack in us-east-1, entitled run (`AWS Marketplace: entitlement verified for NLSQL AI Employee ...`) | pass, after the seller account subscribed to the Limited listing |
+| T6: no `RegisterUsage` gives exit 78 and `(exit 16)`; no `ENCRYPTION_KEY` gives exit 78 and `configuration error` | pass: both exit 78 with the exact lines |
+| e2e, GEMINI=off | pass, 101 of 101 (`Streaming` false) |
+| e2e, GEMINI=on, with S4 (WSS idle 900 s) and S7 (the Gemini model's browser task and `read_image`) | not passed: the test Gemini key's project had no prepaid credits (`402 RESOURCE_EXHAUSTED`), so the browser session ended at once and `read_image` failed; everything else passed. Run again with a funded key |
+| e2e, GEMINI=on, `STREAMING=true` and `--restart-probe` | streaming (with Gemini off): Teams answers are edited in place; Direct Line gets the `Thinking...` card and then one message per streamed chunk (`exactly one answer` fails, master's behaviour). Restart probe: the new task was entitled before `/health` answered UP (16 s); the gate's 503 window (about 1 s) is shorter than the load balancer's health check, so `the gate was never seen` |
+| S1: one real Converse call per `LanguageModel` value | Opus 5.5: probe and answers pass. Not tested: the other six (no Bedrock agreement in the seller account) |
+| Security probes beyond e2e: a Graph-audience token of the bot's app, an `alg none` JWT and a JWT with a borrowed signature | pass: 401 each, no reply. Prompts asking the agent to read `/proc/1/environ` or to browse to metadata addresses never reach a tool: Bedrock answers `content_filtered` |
 | S5 and the manual Teams test | not run |
 | Offline: `check-vars`, `template-invariants`, `listing-check`, `test-scripts`, `no-secrets`, cfn-lint | pass at this commit |
 

@@ -36,6 +36,7 @@ GEMINI         ?=
 STACK_NAME     ?= nlsql-ai-employee-test
 LANGUAGE_MODEL ?=
 GEMINI_MODEL   ?=
+DISABLE_ROLLBACK ?=
 PURGE_DATA     ?=
 E2E_ARGS       ?=
 
@@ -324,10 +325,11 @@ no-secrets: ## Fail if a credential or account ID is committed, now or in histor
 	  echo "  no credential-shaped strings or account IDs found"
 
 .PHONY: deploy-test
-deploy-test: ## Seller test stack (us-east-1) from a local env file: ENV_FILE=<path> [GEMINI=on|off] [LANGUAGE_MODEL=] [GEMINI_MODEL=]
+deploy-test: ## Seller test stack (us-east-1) from a local env file: ENV_FILE=<path> [GEMINI=on|off] [LANGUAGE_MODEL=] [GEMINI_MODEL=] [DISABLE_ROLLBACK=1]
 	@test -n "$(ENV_FILE)" || (echo "ERROR: ENV_FILE=<path to local env file> is required" && exit 1)
 	VERSION=$(VERSION) TEST_TAG=$(TEST_TAG) AWS_REGION=$(AWS_REGION) STACK_NAME="$(STACK_NAME)" GEMINI="$(GEMINI)" \
-	  LANGUAGE_MODEL="$(LANGUAGE_MODEL)" GEMINI_MODEL="$(GEMINI_MODEL)" scripts/deploy-test.sh "$(ENV_FILE)"
+	  LANGUAGE_MODEL="$(LANGUAGE_MODEL)" GEMINI_MODEL="$(GEMINI_MODEL)" DISABLE_ROLLBACK="$(DISABLE_ROLLBACK)" \
+	  scripts/deploy-test.sh "$(ENV_FILE)"
 
 .PHONY: e2e-test
 # The Teams sign-in link reaches the script through the environment only: its

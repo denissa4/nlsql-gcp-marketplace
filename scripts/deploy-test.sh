@@ -32,6 +32,10 @@
 #   SUBNET_IDS      comma-separated; default the default VPC's default-for-AZ subnets
 #   LANGUAGE_MODEL  default MODEL_NAME from the env file, else the template default
 #   GEMINI_MODEL    default GEMINI_MODEL from the env file, else the template default
+#   DISABLE_ROLLBACK 1 keeps a failed creation's resources (CREATE_FAILED), so
+#                   its stopped tasks and log group can be read; the next run
+#                   updates that stack. A test stack left in ROLLBACK_COMPLETE,
+#                   which cannot be updated, is deleted before deploying again.
 #
 # The stack, its tables, buckets and secrets, and the credentials secret are
 # all tagged nlsql:purpose=test. An existing stack or secret without that tag
@@ -228,6 +232,16 @@ if [ -n "$stack_tag" ] && [ "$stack_tag" != "$TEST_TAG_VALUE" ]; then
   echo "ERROR: $STACK_NAME exists and is not tagged $TEST_TAG_KEY=$TEST_TAG_VALUE; refusing to update it" >&2
   exit 1
 fi
+# A failed creation that rolled back can only be deleted, never updated.
+if [ -n "$stack_tag" ]; then
+  stack_status="$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+    --query 'Stacks[0].StackStatus' --output text)"
+  if [ "$stack_status" = "ROLLBACK_COMPLETE" ]; then
+    echo "Deleting the test stack $STACK_NAME, left in ROLLBACK_COMPLETE by a failed creation"
+    aws cloudformation delete-stack --stack-name "$STACK_NAME"
+    aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME"
+  fi
+fi
 
 # 2. The credentials secret, likewise only when it is a test secret.
 secret_state=""
@@ -277,17 +291,28 @@ params=(
 while IFS= read -r line; do params+=("$line"); done < "$WORK/params"
 
 # 4. Deploy. The stack's tag propagates to its tables, buckets and secrets.
+rollback=()
+case "${DISABLE_ROLLBACK:-}" in
+  ""|0) ;;
+  1) rollback=(--disable-rollback) ;;
+  *) echo "ERROR: DISABLE_ROLLBACK must be 1 or empty, not '$DISABLE_ROLLBACK'" >&2; exit 2 ;;
+esac
 if ! aws cloudformation deploy \
     --stack-name "$STACK_NAME" \
     --template-file "$WORK/template.yaml" \
     --capabilities CAPABILITY_IAM \
     --no-fail-on-empty-changeset \
+    ${rollback[@]+"${rollback[@]}"} \
     --tags "$TEST_TAG_KEY=$TEST_TAG_VALUE" \
     --parameter-overrides "${params[@]}"; then
+  # A rollback adds an event per deleted resource, so look further back than
+  # the latest few to find the resource that failed.
   echo "Deployment failed. Most recent failures:" >&2
-  aws cloudformation describe-stack-events --stack-name "$STACK_NAME" --max-items 40 \
-    --query "StackEvents[?contains(ResourceStatus, 'FAILED')].[LogicalResourceId, ResourceStatusReason]" \
+  aws cloudformation describe-stack-events --stack-name "$STACK_NAME" --max-items 400 \
+    --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED'].[LogicalResourceId, ResourceStatusReason]" \
     --output table >&2 || true
+  echo "A task that keeps stopping (the ECS circuit breaker) logs why in /ecs/$STACK_NAME, which a" >&2
+  echo "rollback deletes: deploy again with DISABLE_ROLLBACK=1 to keep it." >&2
   exit 1
 fi
 

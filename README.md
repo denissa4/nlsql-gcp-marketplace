@@ -248,6 +248,14 @@ The app bakes public key v1 since B11, and `PUBKEY_SHA256` pins it, so `push-gua
 release image. An image that still bakes the placeholder key exits 19 on every ECS task (bad
 signature, container 78), and `push-guard` refuses it.
 
+**Subscribe the seller account first.** RegisterUsage entitles only an account that is subscribed
+to the product, the seller's own account included. While the listing is Limited, the seller account
+is on the offer's buyer allowlist: sign in to the console as that account, open **AWS Marketplace,
+Discover products**, find NLSQL AI Employee, then **View purchase options** and **Subscribe**
+(accept the offer's terms). Until then every task stops at start-up with `this AWS account is not
+subscribed to NLSQL AI Employee ... (CustomerNotEntitledException) (exit 10).` and container exit
+code 78, and the deployment circuit breaker rolls the stack back.
+
 AWS requires a test task in us-east-1. Push the enforce image to a **private** test repository
 (`<account>.dkr.ecr.us-east-1.amazonaws.com/nlsql-ai-employee-test:<tag>`) rather than the
 Marketplace repository, so no tag is spent. Then:
@@ -265,6 +273,10 @@ Run the GEMINI=on stack once more with `STREAMING=true` in the env file (`deploy
 then `e2e-test`). A sign-in link copied from a real Teams login card is checked with
 `make e2e-test ENV_FILE=<path> LOGIN_URL='<url>'`. The test targets take `STACK_NAME=<name>`
 (default `nlsql-ai-employee-test`, or `$STACK_NAME` from the environment).
+
+A failed creation rolls back and deletes the log group that says why; `DISABLE_ROLLBACK=1` keeps
+the stack in `CREATE_FAILED` with its log group and stopped tasks, and the next `deploy-test`
+updates it. A test stack left in `ROLLBACK_COMPLETE` is deleted before deploying again.
 
 The env file uses the application's env names (`connections__serviceConnection__settings__clientId`,
 `...clientSecret`, `...tenantId`, `MODEL_NAME`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `STREAMING`,
@@ -295,9 +307,10 @@ enabled, `make deploy-test ENV_FILE=<path> LANGUAGE_MODEL=<model>` and look for
 16-token call with the task role as the server starts), then one e2e answer. Record a model the
 account has not enabled as not tested, not as passed.
 
-**T6, fail-closed.** The seller account is entitled to its own product even while it is Draft, so
-"not subscribed" cannot be tested; instead, run one task from the stack's task definition with a
-task role that lacks `aws-marketplace:RegisterUsage`:
+**T6, fail-closed.** "Not subscribed" shows on the seller account before it subscribes (seen on
+2026-11-04: `CustomerNotEntitledException (exit 10)`, container exit code 78, the circuit breaker
+rolled the stack back). After subscribing, test the access-denied half: run one task from the
+stack's task definition with a task role that lacks `aws-marketplace:RegisterUsage`:
 
 ```shell
 stack=nlsql-ai-employee-test

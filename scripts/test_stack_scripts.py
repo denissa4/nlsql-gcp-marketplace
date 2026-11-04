@@ -70,7 +70,9 @@ if call == ("sts", "get-caller-identity"):
 elif call == ("cloudformation", "describe-stacks"):
     if stack is None:
         fail("ValidationError", f"Stack with id {opt('--stack-name')} does not exist")
-    if "Tags[" in query:
+    if "StackStatus" in query:
+        text(stack.get("status", "CREATE_COMPLETE"))
+    elif "Tags[" in query:
         text(stack.get("tag"))
     elif "contains(" in query:
         print("\n".join(f"{k}\t{v}" for k, v in stack["outputs"].items()))
@@ -372,6 +374,36 @@ class StackScriptsTest(unittest.TestCase):
         self.assertIn("Deployment failed", result.stderr)
         self.assertIn(("cloudformation", "describe-stack-events"), self.ops())
 
+    def test_deploy_lists_failures_beyond_a_rollbacks_events(self):
+        self.deploy(self.state(deploy_fails=True))
+        args = self.only(("cloudformation", "describe-stack-events"))["args"]
+        self.assertGreaterEqual(int(args[args.index("--max-items") + 1]), 200)
+        self.assertIn("CREATE_FAILED", args[args.index("--query") + 1])
+
+    def test_deploy_deletes_a_rolled_back_test_stack_first(self):
+        result = self.deploy(self.state(stack={"tag": "test", "status": "ROLLBACK_COMPLETE", "outputs": {}},
+                                        secret={"tag": "test"}))
+        self.assertDeployed(result)
+        ops = self.ops()
+        self.assertIn("left in ROLLBACK_COMPLETE", result.stdout)
+        self.assertLess(ops.index(("cloudformation", "delete-stack")), ops.index(("cloudformation", "deploy")))
+
+    def test_deploy_keeps_a_live_test_stack(self):
+        self.assertDeployed(self.deploy(self.state(stack={"tag": "test", "outputs": {}}, secret={"tag": "test"})))
+        self.assertNotIn(("cloudformation", "delete-stack"), self.ops())
+
+    def test_disable_rollback(self):
+        self.assertDeployed(self.deploy(self.state(), env={"DISABLE_ROLLBACK": "1"}))
+        self.assertIn("--disable-rollback", self.only(("cloudformation", "deploy"))["args"])
+        self.log.unlink()
+        self.assertDeployed(self.deploy(self.state()))
+        self.assertNotIn("--disable-rollback", self.only(("cloudformation", "deploy"))["args"])
+        self.log.unlink()
+        result = self.deploy(self.state(), env={"DISABLE_ROLLBACK": "yes"})
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("DISABLE_ROLLBACK must be 1", result.stderr)
+        self.assertNotIn(("cloudformation", "deploy"), self.ops())
+
     def test_deploy_stops_on_an_unexpected_aws_error(self):
         result = self.deploy(self.state(deny=["cloudformation", "describe-stacks"]))
         self.assertEqual(result.returncode, 1)
@@ -483,9 +515,10 @@ class MakeTargetsTest(unittest.TestCase):
                               env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/nonexistent"})
 
     def test_deploy_test_passes_the_switches(self):
-        result = self.make("deploy-test", "ENV_FILE=local.env", "GEMINI=on", "LANGUAGE_MODEL=m1", "GEMINI_MODEL=g1")
+        result = self.make("deploy-test", "ENV_FILE=local.env", "GEMINI=on", "LANGUAGE_MODEL=m1", "GEMINI_MODEL=g1",
+                           "DISABLE_ROLLBACK=1")
         self.assertEqual(result.returncode, 0, result.stderr)
-        for needle in ('GEMINI="on"', 'LANGUAGE_MODEL="m1"', 'GEMINI_MODEL="g1"', "TEST_TAG=1.0.0-rc1",
+        for needle in ('GEMINI="on"', 'LANGUAGE_MODEL="m1"', 'GEMINI_MODEL="g1"', 'DISABLE_ROLLBACK="1"', "TEST_TAG=1.0.0-rc1",
                        'STACK_NAME="nlsql-ai-employee-test"', 'scripts/deploy-test.sh "local.env"'):
             self.assertIn(needle, result.stdout)
 

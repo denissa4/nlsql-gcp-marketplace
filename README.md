@@ -382,9 +382,22 @@ the org catalog. Then, on Teams desktop, web and mobile:
 
 ### Test record
 
+**1.0.1.** All runs on 2026-11-04 in the seller account, us-east-1, image `1.0.1-rc1` (digest
+`sha256:e62d180d…a36a`), `LanguageModel` `global.anthropic.claude-opus-5-5`, Gemini off (not
+tested: the owner's decision, the test key had no credits).
+
 | Test | Status |
 |---|---|
-All runs on 2026-11-04 in the seller account, us-east-1, image `1.0.0-rc1` (digest
+| T1: entitled run | pass |
+| e2e, GEMINI=off, `Streaming` false | pass, 101 of 101 |
+| e2e, GEMINI=off, `STREAMING=true` and `--restart-probe` | 107 of 108: Direct Line now gets exactly one answer, Teams answers are edited in place; the restart probe's `the gate was never seen` as for 1.0.0 (the new task was entitled 9 s before `/health` answered UP) |
+| A turn whose answer has no text (Bedrock `content_filtered`, the `/proc/1/environ` probe prompt) | pass: the reply `I have no answer to that: ...` and the log line `NLSQL AI Employee: the language model returned no answer text.`, instead of `No response from server.` |
+| Security probes: a Graph-audience token, an `alg none` JWT, a borrowed signature | pass: 401 each, no reply |
+| T6, both halves | pass: both exit 78 with the exact lines (run last) |
+| S1 | Opus 5.5 only, as for 1.0.0 |
+| S5 and the manual Teams test | not run |
+
+**1.0.0.** All runs on 2026-11-04 in the seller account, us-east-1, image `1.0.0-rc1` (digest
 `sha256:d53f1458…02d1`, the same as the Marketplace `1.0.0`), `LanguageModel`
 `global.anthropic.claude-opus-5-5`.
 

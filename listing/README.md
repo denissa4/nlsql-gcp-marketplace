@@ -64,10 +64,10 @@ amount once, after your own test subscription and before **Update visibility**.
 
 | Field | Value |
 |---|---|
-| Version title and release notes | `release-notes/1.0.0.md` |
+| Version title and release notes | `release-notes/1.0.1.md` |
 | Delivery option type | Container image |
 | Delivery option title | NLSQL AI Employee on Amazon ECS (AWS Fargate) |
-| Container image | `709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee:1.0.0` |
+| Container image | `709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee:1.0.1` |
 | Supported services | **ECS** only (untick EKS) |
 | Delivery option description | `delivery-option-description.txt` |
 | Usage instructions | `usage-instructions.txt` |

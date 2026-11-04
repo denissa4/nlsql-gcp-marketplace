@@ -10,7 +10,7 @@
 ECR_REGISTRY ?= 709825985650.dkr.ecr.us-east-1.amazonaws.com
 ECR_REPO     ?= nlsql/ai-employee
 AWS_REGION   ?= us-east-1
-VERSION      ?= 1.0.0
+VERSION      ?= 1.0.1
 
 # The locally built enforce image: in the application checkout, run
 # `make build IMAGE_LOCAL=ai-employee-aws:$(VERSION)` (its own default name is
@@ -60,6 +60,8 @@ GUIDE       := docs/aws-deployment-guide.md
 LISTING_USAGE    := listing/usage-instructions.txt
 LISTING_DELIVERY := listing/delivery-option-description.txt
 LISTING_NOTES    := listing/release-notes/$(VERSION).md
+# Every version's notes: a published version keeps its own
+LISTING_ALL_NOTES := $(sort $(wildcard listing/release-notes/*.md))
 LISTING_PRODUCT  := listing/product
 
 # Trust anchors baked into the image. `push` refuses anything else; `override`
@@ -266,7 +268,7 @@ template-url: ## Print the commit-pinned template and guide URLs for the listing
 .PHONY: listing-check
 listing-check: ## Enforce Marketplace length and character limits on listing texts, and their Regions
 	@python3 scripts/listing-check.py \
-	  $(LISTING_USAGE):4000 $(LISTING_DELIVERY):999 $(LISTING_NOTES):29999 \
+	  $(LISTING_USAGE):4000 $(LISTING_DELIVERY):999 $(addsuffix :29999,$(LISTING_ALL_NOTES)) \
 	  $(LISTING_PRODUCT)/title.txt:72 $(LISTING_PRODUCT)/short-description.txt:1000 \
 	  $(LISTING_PRODUCT)/long-description.txt:5000 $(LISTING_PRODUCT)/support-description.txt:2000 \
 	  $(LISTING_PRODUCT)/highlight-1.txt:250 $(LISTING_PRODUCT)/highlight-2.txt:250 \

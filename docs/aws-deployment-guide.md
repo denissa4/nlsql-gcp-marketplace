@@ -4,8 +4,8 @@ The complete instructions for deploying NLSQL AI Employee from AWS Marketplace o
 with AWS Fargate. The listing's **Usage instructions** field is capped at 4000 characters, so
 it carries a condensed form and links here.
 
-Applies to NLSQL AI Employee **1.0.0**, image
-`709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee:1.0.0`, and the template
+Applies to NLSQL AI Employee **1.0.1**, image
+`709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee:1.0.1`, and the template
 `cloudformation/nlsql-ai-employee-ecs-fargate.yaml` at the same commit as this document.
 
 NLSQL AI Employee is an AI assistant for Microsoft Teams, using Claude on Amazon Bedrock. In
@@ -114,7 +114,7 @@ finding is expected and accepted.
 **TLS at the edge.** With CloudFront's default certificate, CloudFront applies its **TLSv1**
 security policy: the distribution still accepts TLS 1.0 and 1.1 from a client that offers
 nothing newer. The Microsoft Bot Connector and current browsers negotiate TLS 1.2 or 1.3. A
-TLS 1.2 minimum needs a custom domain with its own certificate, which version 1.0.0 does not
+TLS 1.2 minimum needs a custom domain with its own certificate, which version 1.0.1 does not
 offer. CloudFront forwards no `Referer` header, because the live viewer's address carries its
 token.
 
@@ -146,7 +146,7 @@ session is the user's live one, and is signed with a key that is new for every t
 
 **What is off without Gemini, and in this version.** With `GeminiFeatures=Disabled` (the
 default) the browser agent, its live view and image reading are not offered, and nothing is
-sent to Google. Code mode, which needs a separate coder service, is not part of version 1.0.0.
+sent to Google. Code mode, which needs a separate coder service, is not part of version 1.0.1.
 
 ## 2. What it costs
 
@@ -412,14 +412,14 @@ For the Gemini features, pass `GeminiFeatures=Enabled`, with `GeminiApiKey` in t
 | `KmsKeyArn` | no | empty | customer managed KMS key of that secret |
 | `LanguageModel` | no | `global.anthropic.claude-sonnet-5-5` | Claude model; must be enabled in Bedrock |
 | `ConversationMemoryTokens` | no | `8000` | `8000`, `16000`, `32000` or `64000`: how much of each conversation the model sees; older messages are summarized. More costs more per answer |
-| `Streaming` | no | `false` | `true` shows answers in the chat as they are generated |
+| `Streaming` | no | `false` | `true` shows answers in Microsoft Teams (and Telegram) as they are generated, in one message that grows; other channels get each answer in one message either way |
 | `AdditionalInstructions` | no | empty | up to 4000 characters added to the built-in system prompt, for every user |
 | `GeminiFeatures` | no | `Disabled` | `Enabled` turns on the browser agent, its live view and image reading; the secret must then hold `GeminiApiKey` |
 | `GeminiModel` | no | `gemini-3.8-flash` | `gemini-3.8-flash`, `gemini-3.6-flash` or `gemini-3.5-flash-lite`; used only with Gemini on |
 | `TaskCpu` | no | `2048` | `2048` or `4096` CPU units; with `4096` every deployment stops the old task first |
 | `TaskMemory` | no | `8192` | MiB; 4096–16384 with 2048 CPU, 8192–30720 with 4096 CPU |
 | `EphemeralStorage` | no | `40` | task disk in GiB, 30–200; the image counts against it |
-| `ImageUri` | no | the 1.0.0 image | leave alone unless pinning another published version |
+| `ImageUri` | no | the 1.0.1 image | leave alone unless pinning another published version |
 
 The template refuses to create a stack in an unsupported Region, or with a CPU and memory pair
 Fargate does not offer. It cannot see inside your secret: with `GeminiFeatures=Enabled` and no

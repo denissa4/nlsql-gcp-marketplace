@@ -131,7 +131,7 @@ Parameters:
     Type: String
     Default: 'false'
     AllowedValues: ['false', 'true']
-    Description: Stream answers into the chat as they are generated.
+    Description: Stream answers in Microsoft Teams and Telegram as they are generated; other channels get each answer in one message.
   AdditionalInstructions:
     Type: String
     Default: ''
@@ -179,7 +179,7 @@ Parameters:
 
   ImageUri:
     Type: String
-    Default: 709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee:1.0.0
+    Default: 709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee:1.0.1
     AllowedPattern: '^709825985650\.dkr\.ecr\.us-east-1\.amazonaws\.com/nlsql/ai-employee:[0-9]+\.[0-9]+\.[0-9]+$'
     ConstraintDescription: must be a published NLSQL AI Employee image from AWS Marketplace.
     Description: The AWS Marketplace image. Keep the default unless you are pinning another published version.

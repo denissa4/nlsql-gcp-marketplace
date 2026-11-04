@@ -52,7 +52,7 @@ with each user's Microsoft 365 mail, calendar and OneDrive.
 | RegisterUsage public key version | `1` (Active in the product entity's `SignatureVerificationKeys`) |
 | Public key | baked by the app as `marketplace/aws_marketplace_pubkey_v1.pem` (app item B11), sha256 `68f9c9b44a3bf144a3292718879681231ab20719386792c8aa2559c82f86d2c1`, the Makefile's `PUBKEY_SHA256`. `push` and `push-test` refuse any other key, including the app's earlier placeholder (sha256 `c0dc17d4a034c0f42d73a806bd6b0449c5ad3a18d307db14528579160829ae5b`) |
 | ECR repository | `709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee` (in the product entity's `Repositories`) |
-| Current version | `1.0.0` (local tag `ai-employee-aws:1.0.0`) |
+| Current version | `1.0.1` (local tag `ai-employee-aws:1.0.1`) |
 
 ## Layout
 
@@ -100,7 +100,7 @@ names against that table when the app checkout is at `../ai-employee-aws`. The l
 - **CloudFront terminates TLS**, because Bot Framework refuses plain HTTP and the load balancer
   has no certificate. With the default certificate CloudFront applies its **TLSv1** security
   policy whatever `MinimumProtocolVersion` says, so none is set and the guide says so; a TLS 1.2
-  minimum needs a custom domain, which 1.0.0 does not offer. The distribution caches nothing (TTL
+  minimum needs a custom domain, which 1.0.1 does not offer. The distribution caches nothing (TTL
   0), forwards query strings, cookies and 8 headers (the 4 `Sec-WebSocket-*` among them, never
   `Referer`, since the viewer's URL carries its token), uses `PriceClass_100` and
   `OriginReadTimeout` 60. The CloudFront-to-ALB hop is HTTP, so Security Hub control CloudFront.9

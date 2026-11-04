@@ -24,7 +24,7 @@
 #   GEMINI          on or off; default on when the env file has GEMINI_API_KEY
 #   STACK_NAME      default nlsql-ai-employee-test
 #   AWS_REGION      default us-east-1 (AWS requires a test task in us-east-1)
-#   VERSION         default 1.0.0
+#   VERSION         default 1.0.1
 #   TEST_TAG        default $VERSION-rc1, the tag `make push-test` pushes
 #   IMAGE_URI       default <account>.dkr.ecr.<region>.amazonaws.com/nlsql-ai-employee-test:$TEST_TAG
 #   SECRET_NAME     default $STACK_NAME/credentials
@@ -62,7 +62,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEMPLATE="$REPO_ROOT/cloudformation/nlsql-ai-employee-ecs-fargate.yaml"
 STACK_NAME="${STACK_NAME:-nlsql-ai-employee-test}"
 REGION="${AWS_REGION:-us-east-1}"
-VERSION="${VERSION:-1.0.0}"
+VERSION="${VERSION:-1.0.1}"
 TEST_TAG="${TEST_TAG:-$VERSION-rc1}"
 SECRET_NAME="${SECRET_NAME:-$STACK_NAME/credentials}"
 TEST_TAG_KEY="nlsql:purpose"

@@ -1,7 +1,7 @@
-NLSQL AI Employee 1.0.0
+NLSQL AI Employee 1.0.1
 Full guide: https://github.com/denissa4/nlsql-gcp-marketplace/blob/<commit>/docs/aws-deployment-guide.md
 
-Image: 709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee:1.0.0
+Image: 709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee:1.0.1
 Deploy this delivery option's CloudFormation template (Amazon ECS, AWS Fargate) in the subscribing account in us-east-1/2, us-west-1/2, ca-central-1, sa-east-1, eu-west-1/2/3, eu-central-1, eu-north-1, ap-south-1, ap-northeast-1/2 or ap-southeast-1/2.
 
 BEFORE YOU START

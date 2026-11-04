@@ -30,7 +30,7 @@ USAGE = LISTING / "usage-instructions.txt"
 # What `make listing-check` passes, kept in step with the Makefile.
 MAKE_ARGS = [
     f"{USAGE}:4000", f"{LISTING / 'delivery-option-description.txt'}:999",
-    f"{LISTING / 'release-notes' / '1.0.0.md'}:29999",
+    *(f"{notes}:29999" for notes in sorted((LISTING / "release-notes").glob("*.md"))),
     f"{PRODUCT / 'title.txt'}:72", f"{PRODUCT / 'short-description.txt'}:1000",
     f"{PRODUCT / 'long-description.txt'}:5000", f"{PRODUCT / 'support-description.txt'}:2000",
     f"{PRODUCT / 'highlight-1.txt'}:250", f"{PRODUCT / 'highlight-2.txt'}:250",

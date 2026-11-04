@@ -34,8 +34,12 @@
 #   GEMINI_MODEL    default GEMINI_MODEL from the env file, else the template default
 #   DISABLE_ROLLBACK 1 keeps a failed creation's resources (CREATE_FAILED), so
 #                   its stopped tasks and log group can be read; the next run
-#                   updates that stack. A test stack left in ROLLBACK_COMPLETE,
-#                   which cannot be updated, is deleted before deploying again.
+#                   rolls that stack back and deletes it before creating it
+#                   again. It applies to a creation only: an update that cannot
+#                   roll back may not replace the task definition, and a failed
+#                   update keeps the log group anyway. A stack left in
+#                   UPDATE_FAILED is rolled back before the update, and one left
+#                   in ROLLBACK_COMPLETE, which cannot be updated, is deleted.
 #
 # The stack, its tables, buckets and secrets, and the credentials secret are
 # all tagged nlsql:purpose=test. An existing stack or secret without that tag
@@ -49,6 +53,10 @@ ENV_FILE="${1:-}"
 [ -f "$ENV_FILE" ] || { echo "ERROR: $ENV_FILE not found" >&2; exit 2; }
 GEMINI="${GEMINI:-}"
 case "$GEMINI" in ""|on|off) ;; *) echo "ERROR: GEMINI must be on or off, not '$GEMINI'" >&2; exit 2 ;; esac
+case "${DISABLE_ROLLBACK:-}" in
+  ""|0|1) ;;
+  *) echo "ERROR: DISABLE_ROLLBACK must be 1 or empty, not '$DISABLE_ROLLBACK'" >&2; exit 2 ;;
+esac
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEMPLATE="$REPO_ROOT/cloudformation/nlsql-ai-employee-ecs-fargate.yaml"
@@ -233,13 +241,35 @@ if [ -n "$stack_tag" ] && [ "$stack_tag" != "$TEST_TAG_VALUE" ]; then
   exit 1
 fi
 # A failed creation that rolled back can only be deleted, never updated.
+creating=1
 if [ -n "$stack_tag" ]; then
+  creating=0
   stack_status="$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
     --query 'Stacks[0].StackStatus' --output text)"
+  # A failed run with DISABLE_ROLLBACK=1 leaves CREATE_FAILED or UPDATE_FAILED.
+  # From there CloudFormation only allows an update without rollback, which may
+  # not replace the task definition, so roll back first: a creation to
+  # ROLLBACK_COMPLETE (deleted below), an update to its last good state.
+  case "$stack_status" in
+    CREATE_FAILED|UPDATE_FAILED)
+      echo "Rolling back the test stack $STACK_NAME, left in $stack_status by a run with DISABLE_ROLLBACK=1"
+      aws cloudformation rollback-stack --stack-name "$STACK_NAME"
+      while :; do
+        stack_status="$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+          --query 'Stacks[0].StackStatus' --output text)"
+        case "$stack_status" in *_IN_PROGRESS) sleep 10 ;; *) break ;; esac
+      done
+      case "$stack_status" in
+        ROLLBACK_COMPLETE|UPDATE_ROLLBACK_COMPLETE) ;;
+        *) echo "ERROR: the rollback of $STACK_NAME ended in $stack_status" >&2; exit 1 ;;
+      esac
+      ;;
+  esac
   if [ "$stack_status" = "ROLLBACK_COMPLETE" ]; then
     echo "Deleting the test stack $STACK_NAME, left in ROLLBACK_COMPLETE by a failed creation"
     aws cloudformation delete-stack --stack-name "$STACK_NAME"
     aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME"
+    creating=1
   fi
 fi
 
@@ -291,12 +321,16 @@ params=(
 while IFS= read -r line; do params+=("$line"); done < "$WORK/params"
 
 # 4. Deploy. The stack's tag propagates to its tables, buckets and secrets.
+# CloudFormation refuses to replace a resource (every task definition change)
+# in an update that cannot roll back, so the switch applies to a creation only.
 rollback=()
-case "${DISABLE_ROLLBACK:-}" in
-  ""|0) ;;
-  1) rollback=(--disable-rollback) ;;
-  *) echo "ERROR: DISABLE_ROLLBACK must be 1 or empty, not '$DISABLE_ROLLBACK'" >&2; exit 2 ;;
-esac
+if [ "${DISABLE_ROLLBACK:-}" = 1 ]; then
+  if [ "$creating" = 1 ]; then
+    rollback=(--disable-rollback)
+  else
+    echo "DISABLE_ROLLBACK=1 applies to a creation only; this update of $STACK_NAME rolls back if it fails"
+  fi
+fi
 if ! aws cloudformation deploy \
     --stack-name "$STACK_NAME" \
     --template-file "$WORK/template.yaml" \
@@ -311,8 +345,10 @@ if ! aws cloudformation deploy \
   aws cloudformation describe-stack-events --stack-name "$STACK_NAME" --max-items 400 \
     --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED'].[LogicalResourceId, ResourceStatusReason]" \
     --output table >&2 || true
-  echo "A task that keeps stopping (the ECS circuit breaker) logs why in /ecs/$STACK_NAME, which a" >&2
-  echo "rollback deletes: deploy again with DISABLE_ROLLBACK=1 to keep it." >&2
+  echo "A task that keeps stopping (the ECS circuit breaker) logs why in /ecs/$STACK_NAME." >&2
+  if [ "$creating" = 1 ] && [ "${#rollback[@]}" -eq 0 ]; then
+    echo "A failed creation's rollback deletes that log group: deploy again with DISABLE_ROLLBACK=1 to keep it." >&2
+  fi
   exit 1
 fi
 

@@ -276,7 +276,11 @@ then `e2e-test`). A sign-in link copied from a real Teams login card is checked 
 
 A failed creation rolls back and deletes the log group that says why; `DISABLE_ROLLBACK=1` keeps
 the stack in `CREATE_FAILED` with its log group and stopped tasks, and the next `deploy-test`
-updates it. A test stack left in `ROLLBACK_COMPLETE` is deleted before deploying again.
+rolls it back and deletes it before creating it again. The switch applies to a creation only:
+CloudFormation refuses to replace the task definition in an update that cannot roll back
+(`Replacement type updates not supported on stack with disable-rollback`), and a failed update
+keeps the log group anyway. A test stack left in `UPDATE_FAILED` is rolled back before the update,
+and one left in `ROLLBACK_COMPLETE` is deleted before deploying again.
 
 The env file uses the application's env names (`connections__serviceConnection__settings__clientId`,
 `...clientSecret`, `...tenantId`, `MODEL_NAME`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `STREAMING`,

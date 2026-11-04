@@ -16,6 +16,7 @@ fake.
 """
 import base64
 import contextlib
+import datetime
 import hashlib
 import hmac
 import importlib.util
@@ -719,6 +720,18 @@ class HealthTest(unittest.TestCase):
         for entitled, up in ((1_000_000, 900_000), (None, 1_000_000), (1_000_000, None)):
             with self.subTest(entitled=entitled, up=up):
                 self.assertFalse(e2e.judge_entitled_before_up(entitled, up)[0])
+
+    def test_startup_since_is_the_running_tasks_creation(self):
+        # A stack switched from Gemini off to on keeps the old task's
+        # 'browser agent ... off' line in its log group: only the running
+        # task's start-up counts
+        utc = datetime.timezone.utc
+        tasks = [{"createdAt": datetime.datetime(2026, 11, 4, 19, 3, 30, tzinfo=utc)},
+                 {"createdAt": datetime.datetime(2026, 11, 4, 19, 1, 0, tzinfo=utc)}, {}]
+        self.assertEqual(e2e.startup_since(tasks, 5),
+                         int(datetime.datetime(2026, 11, 4, 19, 1, 0, tzinfo=utc).timestamp() * 1000))
+        self.assertEqual(e2e.startup_since([], 5), 5)
+        self.assertEqual(e2e.startup_since([{}], 5), 5)
 
 
 class ReadImageTest(unittest.TestCase):

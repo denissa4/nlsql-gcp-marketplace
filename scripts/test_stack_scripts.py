@@ -83,6 +83,9 @@ elif call == ("cloudformation", "deploy"):
         sys.exit(255)
     state["stack"] = stack or {"tag": "test", "outputs": {}}
     json.dump(state, open(os.environ["FAKE_AWS_STATE"], "w"))
+elif call == ("cloudformation", "rollback-stack"):
+    stack["status"] = "ROLLBACK_COMPLETE" if stack.get("status") == "CREATE_FAILED" else "UPDATE_ROLLBACK_COMPLETE"
+    json.dump(state, open(os.environ["FAKE_AWS_STATE"], "w"))
 elif call in (("cloudformation", "describe-stack-events"), ("cloudformation", "delete-stack"),
               ("cloudformation", "wait"), ("dynamodb", "wait")):
     pass
@@ -402,7 +405,42 @@ class StackScriptsTest(unittest.TestCase):
         result = self.deploy(self.state(), env={"DISABLE_ROLLBACK": "yes"})
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("DISABLE_ROLLBACK must be 1", result.stderr)
-        self.assertNotIn(("cloudformation", "deploy"), self.ops())
+        self.assertFalse(self.log.exists() and self.ops(), "no AWS call before the switch is checked")
+
+    def test_disable_rollback_applies_to_a_creation_only(self):
+        # CloudFormation refuses to replace the task definition in an update
+        # that cannot roll back ("Replacement type updates not supported").
+        result = self.deploy(self.state(stack={"tag": "test", "outputs": {}}, secret={"tag": "test"}),
+                             env={"DISABLE_ROLLBACK": "1"})
+        self.assertDeployed(result)
+        self.assertNotIn("--disable-rollback", self.only(("cloudformation", "deploy"))["args"])
+        self.assertIn("applies to a creation only", result.stdout)
+        self.log.unlink()
+        # A rolled-back creation is deleted first, so the next deploy creates the stack again.
+        result = self.deploy(self.state(stack={"tag": "test", "status": "ROLLBACK_COMPLETE", "outputs": {}},
+                                        secret={"tag": "test"}), env={"DISABLE_ROLLBACK": "1"})
+        self.assertDeployed(result)
+        self.assertIn("--disable-rollback", self.only(("cloudformation", "deploy"))["args"])
+
+    def test_deploy_rolls_back_a_stack_left_without_rollback(self):
+        # From UPDATE_FAILED CloudFormation allows only an update without
+        # rollback, which may not replace the task definition: roll back, then update.
+        result = self.deploy(self.state(stack={"tag": "test", "status": "UPDATE_FAILED", "outputs": {}},
+                                        secret={"tag": "test"}))
+        self.assertDeployed(result)
+        ops = self.ops()
+        self.assertIn("left in UPDATE_FAILED", result.stdout)
+        self.assertLess(ops.index(("cloudformation", "rollback-stack")), ops.index(("cloudformation", "deploy")))
+        self.assertNotIn(("cloudformation", "delete-stack"), ops)
+        self.log.unlink()
+        # A failed creation rolls back to ROLLBACK_COMPLETE, so it is deleted and created again.
+        result = self.deploy(self.state(stack={"tag": "test", "status": "CREATE_FAILED", "outputs": {}},
+                                        secret={"tag": "test"}), env={"DISABLE_ROLLBACK": "1"})
+        self.assertDeployed(result)
+        ops = self.ops()
+        self.assertLess(ops.index(("cloudformation", "rollback-stack")), ops.index(("cloudformation", "delete-stack")))
+        self.assertLess(ops.index(("cloudformation", "delete-stack")), ops.index(("cloudformation", "deploy")))
+        self.assertIn("--disable-rollback", self.only(("cloudformation", "deploy"))["args"])
 
     def test_deploy_stops_on_an_unexpected_aws_error(self):
         result = self.deploy(self.state(deny=["cloudformation", "describe-stacks"]))

@@ -1256,6 +1256,15 @@ def judge_entitled_before_up(entitled_ms, first_up_ms, skew_ms=5000):
     return lead >= -skew_ms / 1000, f"first UP {lead:.0f} s after the entitlement line"
 
 
+def startup_since(tasks, fallback_ms):
+    """Where the running task's start-up lines begin: the earliest createdAt of
+    the service's running tasks (ECS creates a task before any of its
+    containers logs), else fallback_ms. deploy-test switches a stack in place,
+    so its log group still holds the earlier tasks' start-up lines."""
+    created = [t["createdAt"] for t in tasks if t.get("createdAt")]
+    return int(min(created).timestamp() * 1000) if created else fallback_ms
+
+
 # --- the checks -----------------------------------------------------------------
 
 class Run:
@@ -1872,15 +1881,25 @@ class Run:
         for line in BOOT_ERROR_LINES:
             hits = sum(line in m for m in messages)
             self.add(f"no '{line}' since the stack was created", hits == 0, f"{hits} line(s)")
+        # The start-up lines of the running task only: earlier tasks of a
+        # switched stack logged other models and features
+        ecs = self.session.client("ecs")
+        cluster, service = self.outputs["ClusterName"], self.outputs["ServiceName"]
+        arns = ecs.list_tasks(cluster=cluster, serviceName=service, desiredStatus="RUNNING")["taskArns"]
+        tasks = ecs.describe_tasks(cluster=cluster, tasks=arns)["tasks"] if arns else []
+        since = startup_since(tasks, self.created_ms)
+        boot = [m for ts, m in events if ts >= since]
         entitled = template_parts(STRINGS["entitlement_verified"])
-        self.add("'entitlement verified for NLSQL AI Employee' logged",
-                 any(entitled[0] in m and f"product {PRODUCT_CODE}" in m for m in messages), "")
+        self.add("'entitlement verified for NLSQL AI Employee' logged by the running task",
+                 any(entitled[0] in m and f"product {PRODUCT_CODE}" in m for m in boot), "")
         model = self.params.get("LanguageModel", "")
         probe = STRINGS["bedrock_probe_ok"].replace("<model>", model)
-        self.add(f"'{probe}' logged", any(probe in m for m in messages), "")
-        self.add("'Features: code mode is off' logged", any(STRINGS["coder_off"] in m for m in messages), "")
-        gemini_off = any(STRINGS["gemini_off"] in m for m in messages)
-        self.add(f"'Features: browser agent and image recognition are off' {'absent' if self.gemini else 'logged'}",
+        self.add(f"'{probe}' logged by the running task", any(probe in m for m in boot), "")
+        self.add("'Features: code mode is off' logged by the running task",
+                 any(STRINGS["coder_off"] in m for m in boot), "")
+        gemini_off = any(STRINGS["gemini_off"] in m for m in boot)
+        self.add("'Features: browser agent and image recognition are off' "
+                 f"{'absent' if self.gemini else 'logged'} in the running task's start-up",
                  gemini_off != self.gemini, "")
         replies = captured(self.session, self.capture_log, self.since)
         self.add("no AccessKeyId in any reply", not any("AccessKeyId" in json.dumps(r["activity"]) for r in replies),

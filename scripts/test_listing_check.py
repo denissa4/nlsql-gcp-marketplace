@@ -104,7 +104,7 @@ class RealListing(Case):
                 self.assertRegex(text, r"Other Azure Bot Service channels[^.]*work too, without the Microsoft 365 features")
         long = (PRODUCT / "long-description.txt").read_text(encoding="utf-8")
         self.assertIn("Optional, with your own Google Gemini API key", long)
-        self.assertIn("Without a key these features are not offered", long)
+        self.assertIn("Without a key they run on Claude, and nothing is sent to Google", long)
         self.assertRegex(USAGE.read_text(encoding="utf-8"),
                          r"Other Bot Service channels work without the Microsoft 365 features")
 

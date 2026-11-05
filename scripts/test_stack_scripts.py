@@ -11,6 +11,7 @@ for a closed local port. All IDs, names and secrets are fake.
 """
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -29,7 +30,10 @@ TENANT_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee2"
 STACK = "nlsql-ai-employee-test"
 SECRET = f"{STACK}/credentials"
 SECRET_ARN = f"arn:aws:secretsmanager:us-east-1:{ACCOUNT}:secret:{SECRET}-AbCdEf"
-TEST_IMAGE = f"{ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/nlsql-ai-employee-test:1.0.0-rc1"
+# The release deploy-test.sh and the Makefile default to, whichever it is now
+VERSION = re.search(r'^VERSION="\$\{VERSION:-([0-9.]+)\}"$', (REPO / "scripts" / "deploy-test.sh").read_text(),
+                    re.MULTILINE).group(1)
+TEST_IMAGE = f"{ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/nlsql-ai-employee-test:{VERSION}-rc1"
 MARKETPLACE = r"709825985650\.dkr\.ecr\.us-east-1\.amazonaws\.com/nlsql/ai-employee:[0-9]+\.[0-9]+\.[0-9]+"
 TEST_REPO = r"[0-9]{12}\.dkr\.ecr\.us-east-1\.amazonaws\.com/nlsql-ai-employee-test:.+"
 KEPT = {"UsersTableName": "fake-users", "TasksTableName": "fake-tasks",
@@ -250,8 +254,12 @@ class StackScriptsTest(unittest.TestCase):
             "CredentialsSecretArn": SECRET_ARN, "MicrosoftAppId": APP_ID, "MicrosoftAppTenantId": TENANT_ID,
             "LanguageModel": "global.anthropic.claude-sonnet-5-5", "Streaming": "false",
             "ConversationMemoryTokens": "8000", "AdditionalInstructions": "", "GeminiModel": "gemini-3.8-flash",
-            "GeminiFeatures": "Disabled"})
-        self.assertIn("Gemini off", result.stdout)
+            "GeminiFeatures": "Disabled", "BrowserAgent": "Enabled"})
+        self.assertIn("Gemini off, browser agent Enabled", result.stdout)
+
+    def test_deploy_with_the_browser_agent_off(self):
+        params = self.assertDeployed(self.deploy(self.state(), env_text(), env={"BROWSER_AGENT": "Disabled"}))
+        self.assertEqual(params["BrowserAgent"], "Disabled")
 
     def test_deploy_gemini_on_updates_the_test_secret_and_stack(self):
         state = self.state(stack={"tag": "test", "outputs": KEPT}, secret={"tag": "test"})
@@ -290,7 +298,7 @@ class StackScriptsTest(unittest.TestCase):
         params = self.deploy_params()
         self.assertEqual(params["LanguageModel"], "global.anthropic.claude-haiku-4-5-20251001-v1:0")
         self.assertEqual(params["GeminiModel"], "gemini-3.5-flash-lite")
-        self.assertEqual(params["ImageUri"], TEST_IMAGE.replace("1.0.0-rc1", "2.0.0-rc1"))
+        self.assertEqual(params["ImageUri"], TEST_IMAGE.replace(f"{VERSION}-rc1", "2.0.0-rc1"))
         self.assertEqual((params["VpcId"], params["SubnetIds"]), ("vpc-0given", "subnet-1,subnet-2"))
         self.assertNotIn(("ec2", "describe-vpcs"), self.ops())
         args = self.only(("secretsmanager", "create-secret"))["args"]
@@ -338,6 +346,7 @@ class StackScriptsTest(unittest.TestCase):
         cases = [
             ({"GEMINI": "on"}, env_text(), "lacks GEMINI_API_KEY (GEMINI=on)", 1),
             ({"GEMINI": "yes"}, env_text(), "GEMINI must be on or off", 2),
+            ({"BROWSER_AGENT": "off"}, env_text(), "BROWSER_AGENT must be Enabled or Disabled", 2),
             ({}, env_text(connections__serviceConnection__settings__clientSecret=None), "lacks clientSecret", 1),
             ({}, env_text(MODEL_MEMORY_TOKENS="12000"), "MODEL_MEMORY_TOKENS '12000' is not one of", 1),
             ({}, env_text(MODEL_NAME="anthropic.claude-v2"), "LANGUAGE_MODEL or MODEL_NAME 'anthropic.claude-v2'", 1),
@@ -554,10 +563,11 @@ class MakeTargetsTest(unittest.TestCase):
 
     def test_deploy_test_passes_the_switches(self):
         result = self.make("deploy-test", "ENV_FILE=local.env", "GEMINI=on", "LANGUAGE_MODEL=m1", "GEMINI_MODEL=g1",
-                           "DISABLE_ROLLBACK=1")
+                           "DISABLE_ROLLBACK=1", "BROWSER_AGENT=Disabled")
         self.assertEqual(result.returncode, 0, result.stderr)
-        for needle in ('GEMINI="on"', 'LANGUAGE_MODEL="m1"', 'GEMINI_MODEL="g1"', 'DISABLE_ROLLBACK="1"', "TEST_TAG=1.0.0-rc1",
-                       'STACK_NAME="nlsql-ai-employee-test"', 'scripts/deploy-test.sh "local.env"'):
+        for needle in ('GEMINI="on"', 'LANGUAGE_MODEL="m1"', 'GEMINI_MODEL="g1"', 'DISABLE_ROLLBACK="1"', f"TEST_TAG={VERSION}-rc1",
+                       'STACK_NAME="nlsql-ai-employee-test"', 'scripts/deploy-test.sh "local.env"',
+                       'BROWSER_AGENT="Disabled"'):
             self.assertIn(needle, result.stdout)
 
     def test_destroy_test_passes_purge_data(self):

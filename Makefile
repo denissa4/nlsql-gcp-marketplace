@@ -10,7 +10,7 @@
 ECR_REGISTRY ?= 709825985650.dkr.ecr.us-east-1.amazonaws.com
 ECR_REPO     ?= nlsql/ai-employee
 AWS_REGION   ?= us-east-1
-VERSION      ?= 1.0.1
+VERSION      ?= 1.0.2
 
 # The locally built enforce image: in the application checkout, run
 # `make build IMAGE_LOCAL=ai-employee-aws:$(VERSION)` (its own default name is
@@ -27,12 +27,14 @@ TEST_TAG     ?= $(VERSION)-rc1
 # Seller-account test stack (scripts/deploy-test.sh, scripts/e2e-test.py,
 # scripts/destroy-test.sh), deployed from TEST_TAG in the private repository
 # above. GEMINI=on or off; empty means on when the env file has GEMINI_API_KEY.
+# BROWSER_AGENT=Enabled (default) or Disabled sets the template's BrowserAgent.
 # LANGUAGE_MODEL and GEMINI_MODEL override the env file's MODEL_NAME and
 # GEMINI_MODEL. E2E_ARGS goes to scripts/e2e-test.py as is: --skip-schedule,
 # --restart-probe, --ws-idle <seconds>, --keep-capture. A Teams sign-in link
 # goes in LOGIN_URL='<url>', never in E2E_ARGS.
 ENV_FILE       ?=
 GEMINI         ?=
+BROWSER_AGENT  ?=
 STACK_NAME     ?= nlsql-ai-employee-test
 LANGUAGE_MODEL ?=
 GEMINI_MODEL   ?=
@@ -327,9 +329,9 @@ no-secrets: ## Fail if a credential or account ID is committed, now or in histor
 	  echo "  no credential-shaped strings or account IDs found"
 
 .PHONY: deploy-test
-deploy-test: ## Seller test stack (us-east-1) from a local env file: ENV_FILE=<path> [GEMINI=on|off] [LANGUAGE_MODEL=] [GEMINI_MODEL=] [DISABLE_ROLLBACK=1]
+deploy-test: ## Seller test stack (us-east-1) from a local env file: ENV_FILE=<path> [GEMINI=on|off] [BROWSER_AGENT=Enabled|Disabled] [LANGUAGE_MODEL=] [GEMINI_MODEL=] [DISABLE_ROLLBACK=1]
 	@test -n "$(ENV_FILE)" || (echo "ERROR: ENV_FILE=<path to local env file> is required" && exit 1)
-	VERSION=$(VERSION) TEST_TAG=$(TEST_TAG) AWS_REGION=$(AWS_REGION) STACK_NAME="$(STACK_NAME)" GEMINI="$(GEMINI)" \
+	VERSION=$(VERSION) TEST_TAG=$(TEST_TAG) AWS_REGION=$(AWS_REGION) STACK_NAME="$(STACK_NAME)" GEMINI="$(GEMINI)" BROWSER_AGENT="$(BROWSER_AGENT)" \
 	  LANGUAGE_MODEL="$(LANGUAGE_MODEL)" GEMINI_MODEL="$(GEMINI_MODEL)" DISABLE_ROLLBACK="$(DISABLE_ROLLBACK)" \
 	  scripts/deploy-test.sh "$(ENV_FILE)"
 

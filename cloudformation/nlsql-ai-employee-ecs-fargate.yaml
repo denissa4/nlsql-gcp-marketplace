@@ -5,7 +5,8 @@ Description: >-
   Load Balancer and a CloudFront HTTPS endpoint for your Azure Bot (Microsoft
   Teams and the other Bot Service channels), in subnets you already have, with
   Amazon Bedrock (Claude) through the task role and DynamoDB tables and S3
-  buckets for your users' data. Google Gemini features are optional, with your
+  buckets for your users' data. The browser agent (on by default) and image
+  reading run on your Bedrock model, or optionally on Google Gemini with your
   own key.
 
 Metadata:
@@ -19,8 +20,8 @@ Metadata:
         Parameters: [CredentialsSecretArn, KmsKeyArn]
       - Label: {default: Language model (Amazon Bedrock)}
         Parameters: [LanguageModel, ConversationMemoryTokens, Streaming, AdditionalInstructions]
-      - Label: {default: 'Optional: browser agent and image reading (Google Gemini)'}
-        Parameters: [GeminiFeatures, GeminiModel]
+      - Label: {default: Browser agent and image reading}
+        Parameters: [BrowserAgent, GeminiFeatures, GeminiModel]
       - Label: {default: Sizing}
         Parameters: [TaskCpu, TaskMemory, EphemeralStorage]
       - Label: {default: Image}
@@ -38,6 +39,7 @@ Metadata:
       ConversationMemoryTokens: {default: Conversation memory (tokens)}
       Streaming: {default: Stream answers}
       AdditionalInstructions: {default: Additional instructions (optional)}
+      BrowserAgent: {default: Browser agent}
       GeminiFeatures: {default: Gemini features}
       GeminiModel: {default: Gemini model}
       TaskCpu: {default: Task CPU units}
@@ -138,15 +140,24 @@ Parameters:
     MaxLength: 4000
     Description: Optional. Added to the built-in system prompt, for every user.
 
+  BrowserAgent:
+    Type: String
+    Default: Enabled
+    AllowedValues: [Enabled, Disabled]
+    Description: >-
+      Enabled offers the browser agent, which opens websites for your users in
+      a live browser they can watch and take over (a Chromium without its own
+      sandbox inside the task). Disabled offers no browser agent and routes no
+      live view. Image reading is on either way.
   GeminiFeatures:
     Type: String
     Default: Disabled
     AllowedValues: [Disabled, Enabled]
     Description: >-
-      Enabled turns on the browser agent (with its live view) and image
-      reading, which call Google Gemini with your own key: the credentials
-      secret must then hold GeminiApiKey. Disabled offers neither, and nothing
-      is sent to Google.
+      Disabled runs the browser agent and image reading on your Bedrock
+      language model, and nothing is sent to Google. Enabled runs them on
+      Google Gemini with your own key, and on the Bedrock model whenever
+      Gemini fails: the credentials secret must then hold GeminiApiKey.
   GeminiModel:
     Type: String
     Default: gemini-3.8-flash
@@ -179,7 +190,7 @@ Parameters:
 
   ImageUri:
     Type: String
-    Default: 709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee:1.0.1
+    Default: 709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee:1.0.2
     AllowedPattern: '^709825985650\.dkr\.ecr\.us-east-1\.amazonaws\.com/nlsql/ai-employee:[0-9]+\.[0-9]+\.[0-9]+$'
     ConstraintDescription: must be a published NLSQL AI Employee image from AWS Marketplace.
     Description: The AWS Marketplace image. Keep the default unless you are pinning another published version.
@@ -250,6 +261,7 @@ Conditions:
   HasTaskSubnets: !Not [!Equals [!Join ['', !Ref TaskSubnetIds], '']]
   HasAdditionalInstructions: !Not [!Equals [!Ref AdditionalInstructions, '']]
   GeminiEnabled: !Equals [!Ref GeminiFeatures, Enabled]
+  BrowserAgentEnabled: !Equals [!Ref BrowserAgent, Enabled]
   # Two 4 vCPU tasks need 8 vCPU, above the default Fargate quota of 6.
   StopBeforeStart: !Equals [!Ref TaskCpu, '4096']
 
@@ -627,10 +639,10 @@ Resources:
           TargetGroupArn: !Ref TargetGroup
 
   # The live browser view (noVNC, its WebSocket and its session API), only
-  # where the browser agent exists.
+  # where the browser agent is offered.
   ListenerRuleBrowserView:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule
-    Condition: GeminiEnabled
+    Condition: BrowserAgentEnabled
     Properties:
       ListenerArn: !Ref Listener
       Priority: 30
@@ -704,9 +716,10 @@ Resources:
             - {Name: connections__serviceConnection__settings__tenantId, Value: !Ref MicrosoftAppTenantId}
             # The Microsoft 365 sign-in's redirect URI, registered in Entra.
             - {Name: REDIRECT_URI, Value: !Sub 'https://${Distribution.DomainName}/callback'}
-            # The public base URL: the cards' images (/static/), always, and
-            # the live browser's links with Gemini.
+            # The public base URL: the cards' images (/static/) and the live
+            # browser's links.
             - {Name: BROWSER_USE_HOST, Value: !Sub 'https://${Distribution.DomainName}'}
+            - {Name: BROWSER_AGENT_ENABLED, Value: !If [BrowserAgentEnabled, 'true', 'false']}
             - !If
               - GeminiEnabled
               - {Name: GEMINI_MODEL, Value: !Ref GeminiModel}
@@ -841,8 +854,8 @@ Outputs:
     Description: Add as a Web redirect URI of the bot's app registration in Microsoft Entra (Microsoft 365 sign-in).
     Value: !Sub 'https://${Distribution.DomainName}/callback'
   BrowserViewUrl:
-    Condition: GeminiEnabled
-    Description: The live browser viewer (Gemini features only).
+    Condition: BrowserAgentEnabled
+    Description: The live browser viewer (BrowserAgent Enabled only).
     Value: !Sub 'https://${Distribution.DomainName}/vnc/'
   CloudFrontDomain:
     Description: The deployment's public domain. Add it to the Teams app's validDomains.

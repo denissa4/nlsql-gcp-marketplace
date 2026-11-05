@@ -152,7 +152,8 @@ class BuildPackageTest(unittest.TestCase):
     def aws_calls(self):
         return self.aws_log.read_text().splitlines() if self.aws_log.exists() else []
 
-    def test_offline_without_browser_view(self):
+    def test_offline_the_browser_view_tab_is_added_by_default(self):
+        # BrowserAgent Enabled, the default, gives the stack its live browser view
         for jq, zip_ in renderers():
             with self.subTest(jq=jq, zip=zip_):
                 m = self.built(self.run_script("--app-id", APP_ID, "--domain", DOMAIN, jq=jq, zip_=zip_))
@@ -160,6 +161,16 @@ class BuildPackageTest(unittest.TestCase):
                 self.assertEqual(m["bots"][0]["botId"], APP_ID)
                 self.assertEqual(m["validDomains"], [DOMAIN])
                 self.assertEqual(m["version"], "1.0.0")
+                tabs = {t["entityId"]: t for t in m["staticTabs"]}
+                self.assertEqual(tabs["browser-use"]["contentUrl"], f"https://{DOMAIN}/vnc/")
+        self.assertEqual(self.aws_calls(), [], "the offline form called aws")
+
+    def test_offline_without_browser_view(self):
+        for jq, zip_ in renderers():
+            with self.subTest(jq=jq, zip=zip_):
+                m = self.built(self.run_script("--app-id", APP_ID, "--domain", DOMAIN, "--no-browser-view",
+                                               jq=jq, zip_=zip_))
+                self.assertEqual(m["validDomains"], [DOMAIN])
                 self.assertNotIn("staticTabs", m)
         self.assertEqual(self.aws_calls(), [], "the offline form called aws")
 
@@ -181,7 +192,7 @@ class BuildPackageTest(unittest.TestCase):
                 self.assertEqual(m["id"], APP_ID)
         self.assertEqual(self.aws_calls(), [])
 
-    def test_stack_with_gemini(self):
+    def test_stack_with_the_browser_view_output(self):
         for jq, zip_ in renderers():
             with self.subTest(jq=jq, zip=zip_):
                 m = self.built(self.run_script("--stack", "ai-employee", "--region", "eu-west-1", jq=jq, zip_=zip_,
@@ -192,7 +203,8 @@ class BuildPackageTest(unittest.TestCase):
         self.assertEqual(set(self.aws_calls()),
                          {"cloudformation describe-stacks --stack-name ai-employee --region eu-west-1 --output json"})
 
-    def test_stack_without_gemini(self):
+    def test_stack_without_the_browser_view_output(self):
+        # BrowserAgent Disabled (or GeminiFeatures Disabled before template 1.0.2)
         for jq, zip_ in renderers():
             with self.subTest(jq=jq, zip=zip_):
                 m = self.built(self.run_script("--stack", "ai-employee", jq=jq, zip_=zip_, reply=stack_json()))

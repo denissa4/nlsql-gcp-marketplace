@@ -10,9 +10,10 @@ tags.
 
 Without --app-repo the checks cover the template alone: the environment the
 task gets (no forbidden or secret-shaped names in plain text, the Gemini
-settings and the browser view only with GeminiFeatures Enabled), the load
-balancer's path allowlist, the tables' key schema, the Region list against
-RegionMap and the rule's message, the size limit of --template-body, the
+settings only with GeminiFeatures Enabled), the load balancer's path allowlist
+and the BrowserViewUrl output (the browser view only with BrowserAgent
+Enabled, with Gemini or without it), the tables' key schema, the Region list
+against RegionMap and the rule's message, the size limit of --template-body, the
 pinned ENCRYPTION_KEY block, the task's hardening and the model list's
 default. --app-repo DIR names a checkout of the application (ai-employee,
 branch aws-marketplace-offer) and adds: LanguageModel's AllowedValues equal
@@ -60,16 +61,17 @@ FORBIDDEN_ENV_PREFIXES = ("DL_", "AWS_ENDPOINT_URL", "AWS_BEARER_TOKEN_", "AWS_C
 SECRET_SHAPED = re.compile(r"SECRET|PASSWORD|API_KEY|ENCRYPTION_KEY", re.IGNORECASE)
 
 GEMINI_CONDITION = "GeminiEnabled"
+BROWSER_CONDITION = "BrowserAgentEnabled"
 GEMINI_ENV = frozenset({"GEMINI_API_KEY", "GEMINI_MODEL"})
 # Set always, whatever the parameters (BROWSER_USE_HOST too: the cards'
-# images need it with Gemini off).
+# images need it; BROWSER_AGENT_ENABLED to true or false).
 UNCONDITIONAL_ENV = frozenset({
     "MODEL_NAME", "USER_STORAGE_TABLE_NAME", "TASK_STORAGE_TABLE_NAME",
     "BLOB_CONTAINER_NAME", "CONVERSATION_CONTAINER_NAME",
     "connections__serviceConnection__settings__clientId",
     "connections__serviceConnection__settings__clientSecret",
     "connections__serviceConnection__settings__tenantId",
-    "REDIRECT_URI", "BROWSER_USE_HOST", "ENCRYPTION_KEY", "AWS_MARKETPLACE_PRODUCT_CODE",
+    "REDIRECT_URI", "BROWSER_USE_HOST", "BROWSER_AGENT_ENABLED", "ENCRYPTION_KEY", "AWS_MARKETPLACE_PRODUCT_CODE",
 })
 CREDENTIALS_SECRET = "CredentialsSecretArn"
 # JSON keys of the buyer's secret, and the condition each is read under
@@ -80,7 +82,7 @@ CREDENTIALS_KEYS = {"AppPassword": None, "GeminiApiKey": GEMINI_CONDITION}
 PUBLIC_PATHS = {
     10: (["/api/messages", "/callback", "/health"], None),
     20: (["/static/*"], None),
-    30: (["/vnc/*", "/websockify/*", "/api/browser-use/*"], GEMINI_CONDITION),
+    30: (["/vnc/*", "/websockify/*", "/api/browser-use/*"], BROWSER_CONDITION),
 }
 NEVER_PUBLIC = frozenset({"/api/prompt", "/proactive", "/validate-vnc", "/*", "*"})
 ORIGIN_HEADER = "X-Origin-Verify"
@@ -244,8 +246,10 @@ def check_paths(ctx):
     for priority in sorted(set(PUBLIC_PATHS) - set(found)):
         problems.append(f"no listener rule with priority {priority} {PUBLIC_PATHS[priority][0]!r}")
     outputs = template.get("Outputs", {})
-    if "BrowserViewUrl" in outputs and outputs["BrowserViewUrl"].get("Condition") != GEMINI_CONDITION:
-        problems.append(f"the BrowserViewUrl output needs Condition {GEMINI_CONDITION}")
+    if "BrowserViewUrl" not in outputs:
+        problems.append("the BrowserViewUrl output is missing")
+    elif outputs["BrowserViewUrl"].get("Condition") != BROWSER_CONDITION:
+        problems.append(f"the BrowserViewUrl output needs Condition {BROWSER_CONDITION}, as the live view's rule")
     return problems
 
 

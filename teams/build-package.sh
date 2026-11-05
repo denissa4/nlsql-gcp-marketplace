@@ -10,8 +10,9 @@
 #                  or MicrosoftAppId; the stack's MicrosoftAppId parameter
 #   domain         --domain; the stack's CloudFrontDomain output
 #   Browser-Use    --browser-view / --no-browser-view; with --stack, whether
-#   help tab       the stack has the BrowserViewUrl output (GeminiFeatures
-#                  Enabled); otherwise left out
+#   help tab       the stack has the BrowserViewUrl output (BrowserAgent
+#                  Enabled; before template 1.0.2, GeminiFeatures Enabled);
+#                  otherwise added
 # With --stack the script reads the stack once (aws cloudformation
 # describe-stacks); without it, it makes no AWS call at all.
 #
@@ -88,7 +89,7 @@ if [ -n "$STACK" ]; then
 elif [ -n "$REGION" ]; then
   die "--region needs --stack"
 fi
-[ -n "$BROWSER_VIEW" ] || BROWSER_VIEW=no
+[ -n "$BROWSER_VIEW" ] || BROWSER_VIEW=yes
 
 [ -n "$APP_ID" ] || die "no bot app ID: give --stack, or --app-id <guid>"
 [ -n "$DOMAIN" ] || die "no CloudFront domain: give --stack, or --domain <d...cloudfront.net>"
@@ -173,7 +174,7 @@ echo "  validDomains       $DOMAIN"
 if [ "$TAB" = true ]; then
   echo "  Browser-Use tab    https://$DOMAIN/vnc/ (a help page; the live browser opens from the chat)"
 else
-  echo "  Browser-Use tab    left out (GeminiFeatures Disabled)"
+  echo "  Browser-Use tab    left out (no live browser view: BrowserAgent Disabled, or GeminiFeatures Disabled before 1.0.2)"
 fi
 echo "  version            $APP_VERSION"
 echo "  wrote $MANIFEST"

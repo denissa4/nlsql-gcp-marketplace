@@ -350,11 +350,12 @@ class HygieneTest(unittest.TestCase):
 
 class ExactStringsTest(unittest.TestCase):
     def test_capability_sentences(self):
-        self.assertEqual(e2e.capability_sentence(False, False), "I can read documents and run tasks on a schedule.")
-        self.assertEqual(e2e.capability_sentence(False, True),
+        self.assertEqual(e2e.capability_sentence(False),
                          "I can browse the web while you watch, read documents and images, and run tasks on a "
                          "schedule.")
-        self.assertEqual(e2e.capability_sentence(True, True, True),
+        self.assertEqual(e2e.capability_sentence(False, browser=False),
+                         "I can read documents and images, and run tasks on a schedule.")
+        self.assertEqual(e2e.capability_sentence(True, True),
                          "I can read and send your email, manage your calendar, browse the web while you watch, "
                          "read documents and images, write code, and run tasks on a schedule.")
 
@@ -365,7 +366,7 @@ class ExactStringsTest(unittest.TestCase):
     def test_error_lines_are_not_the_expected_ones(self):
         for line in e2e.ERROR_LINES + e2e.BOOT_ERROR_LINES:
             for expected in (e2e.STRINGS["entitlement_verified"], e2e.STRINGS["bedrock_probe_ok"],
-                             e2e.STRINGS["coder_off"], e2e.STRINGS["gemini_off"]):
+                             e2e.STRINGS["coder_off"], e2e.STRINGS["gemini_unset"]):
                 self.assertNotIn(line, expected)
 
     @unittest.skipUnless(os.environ.get("APP_REPO"), "set APP_REPO to a checkout of ai-employee")
@@ -383,8 +384,8 @@ class ExactStringsTest(unittest.TestCase):
                 self.assertIn(value, cells)
         sentences = re.findall(r"^\| (yes|no) \| (yes|no) \| (yes|no) \| `([^`]+)` \|$", section, re.M)
         self.assertEqual(len(sentences), 8)
-        for m365, gemini, coder, sentence in sentences:
-            self.assertEqual(e2e.capability_sentence(m365 == "yes", gemini == "yes", coder == "yes"), sentence)
+        for m365, browser, coder, sentence in sentences:
+            self.assertEqual(e2e.capability_sentence(m365 == "yes", coder == "yes", browser == "yes"), sentence)
 
     @unittest.skipUnless(os.environ.get("APP_REPO"), "set APP_REPO to a checkout of ai-employee")
     def test_user_references_live_in_the_tasks_table(self):

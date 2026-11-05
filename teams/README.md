@@ -28,18 +28,20 @@ teams/build-package.sh --stack <stack-name>
 ```
 
 It reads the stack once (`aws cloudformation describe-stacks`): the
-`MicrosoftAppId` parameter, the `CloudFrontDomain` output and, when GeminiFeatures
-is Enabled, the `BrowserViewUrl` output. It needs bash, jq or python3, and zip or
+`MicrosoftAppId` parameter, the `CloudFrontDomain` output and the `BrowserViewUrl`
+output, which a stack has with BrowserAgent Enabled, the default (before template
+1.0.2, with GeminiFeatures Enabled). It needs bash, jq or python3, and zip or
 python3. `--region <region>` reads a stack in another Region.
 
 Without AWS access, give the values yourself; the script then makes no AWS call:
 
 ```shell
-teams/build-package.sh --app-id <MicrosoftAppId> --domain <CloudFrontDomain> [--browser-view]
+teams/build-package.sh --app-id <MicrosoftAppId> --domain <CloudFrontDomain> [--no-browser-view]
 ```
 
-`--browser-view` adds the Browser-Use help tab; give it only when the stack has
-GeminiFeatures Enabled. The app ID can also come from the env var
+The Browser-Use help tab is added unless `--no-browser-view` is given, which a
+stack with BrowserAgent Disabled needs (and one from a template before 1.0.2 with
+GeminiFeatures Disabled). The app ID can also come from the env var
 `connections__serviceConnection__settings__clientId` or `MicrosoftAppId`.
 `--version x.y.z` sets the app's version, and `--out-dir <dir>` writes the files
 elsewhere.
@@ -64,12 +66,13 @@ has no coder service.
 
 ## The Browser-Use help tab
 
-With GeminiFeatures Enabled the app has a second personal tab, **Browser-Use**
+With the browser agent on, the app has a second personal tab, **Browser-Use**
 (`entityId` `browser-use`), on `https://<CloudFrontDomain>/vnc/`, after the
 bot's chat (`entityId` `conversations`). It is a help page: the live browser
 opens in a Teams dialog from the **Open live browser** button on the bot's
-cards, and the tab says so. Without Gemini there is no live browser, so
-`build-package.sh` leaves `staticTabs` out and the chat is the only tab.
+cards, and the tab says so. A stack with BrowserAgent Disabled (or one from a
+template before 1.0.2 with GeminiFeatures Disabled) has no live browser, so for
+it `build-package.sh` leaves `staticTabs` out and the chat is the only tab.
 
 ## Icon requirements
 
@@ -140,7 +143,9 @@ The tenant must allow custom apps. Either:
 Build the package again and upload it as an update when:
 
 - the CloudFront domain changes (the stack was deleted and recreated);
-- GeminiFeatures was switched on or off, which adds or removes the Browser-Use tab.
+- BrowserAgent was switched, which adds or removes the Browser-Use tab, or a stack
+  made from a template before 1.0.2 with GeminiFeatures Disabled was updated to
+  1.0.2 or later with BrowserAgent Enabled, which adds it.
 
 Keep `version` increasing when you re-upload, for example
 `teams/build-package.sh --stack <stack-name> --version 1.0.1`.

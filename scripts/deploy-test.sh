@@ -22,9 +22,10 @@
 #
 # Environment overrides:
 #   GEMINI          on or off; default on when the env file has GEMINI_API_KEY
+#   BROWSER_AGENT   Enabled or Disabled, the template's BrowserAgent; default Enabled
 #   STACK_NAME      default nlsql-ai-employee-test
 #   AWS_REGION      default us-east-1 (AWS requires a test task in us-east-1)
-#   VERSION         default 1.0.1
+#   VERSION         default 1.0.2
 #   TEST_TAG        default $VERSION-rc1, the tag `make push-test` pushes
 #   IMAGE_URI       default <account>.dkr.ecr.<region>.amazonaws.com/nlsql-ai-employee-test:$TEST_TAG
 #   SECRET_NAME     default $STACK_NAME/credentials
@@ -53,6 +54,8 @@ ENV_FILE="${1:-}"
 [ -f "$ENV_FILE" ] || { echo "ERROR: $ENV_FILE not found" >&2; exit 2; }
 GEMINI="${GEMINI:-}"
 case "$GEMINI" in ""|on|off) ;; *) echo "ERROR: GEMINI must be on or off, not '$GEMINI'" >&2; exit 2 ;; esac
+BROWSER_AGENT="${BROWSER_AGENT:-Enabled}"
+case "$BROWSER_AGENT" in Enabled|Disabled) ;; *) echo "ERROR: BROWSER_AGENT must be Enabled or Disabled, not '$BROWSER_AGENT'" >&2; exit 2 ;; esac
 case "${DISABLE_ROLLBACK:-}" in
   ""|0|1) ;;
   *) echo "ERROR: DISABLE_ROLLBACK must be 1 or empty, not '$DISABLE_ROLLBACK'" >&2; exit 2 ;;
@@ -62,7 +65,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEMPLATE="$REPO_ROOT/cloudformation/nlsql-ai-employee-ecs-fargate.yaml"
 STACK_NAME="${STACK_NAME:-nlsql-ai-employee-test}"
 REGION="${AWS_REGION:-us-east-1}"
-VERSION="${VERSION:-1.0.1}"
+VERSION="${VERSION:-1.0.2}"
 TEST_TAG="${TEST_TAG:-$VERSION-rc1}"
 SECRET_NAME="${SECRET_NAME:-$STACK_NAME/credentials}"
 TEST_TAG_KEY="nlsql:purpose"
@@ -99,10 +102,10 @@ lookup() {
 # Parse the env file without sourcing it, check every value against the
 # template's own constraints, and write the secret JSON, the stack parameters
 # and the Gemini switch into the private work directory.
-python3 - "$ENV_FILE" "$TEMPLATE" "$WORK" "$GEMINI" "${LANGUAGE_MODEL:-}" "${GEMINI_MODEL:-}" <<'PY'
+python3 - "$ENV_FILE" "$TEMPLATE" "$WORK" "$GEMINI" "${LANGUAGE_MODEL:-}" "${GEMINI_MODEL:-}" "$BROWSER_AGENT" <<'PY'
 import json, os, re, sys
 
-env_file, template, work, gemini, model_override, gemini_model_override = sys.argv[1:7]
+env_file, template, work, gemini, model_override, gemini_model_override, browser_agent = sys.argv[1:8]
 env = {}
 with open(env_file, encoding="utf-8") as fh:
     for raw in fh:
@@ -187,6 +190,7 @@ for name, (value, source) in chosen.items():
         sys.exit(f"ERROR: {source} is longer than the template's {max_length} characters")
     params[name] = value
 params["GeminiFeatures"] = "Enabled" if gemini == "on" else "Disabled"
+params["BrowserAgent"] = browser_agent
 
 for key, value in params.items():
     if "\n" in value or "\r" in value:
@@ -229,7 +233,7 @@ case "$IMAGE_URI" in
      exit 1 ;;
 esac
 
-echo "Account $ACCOUNT_ID, Region $REGION, stack $STACK_NAME, Gemini $GEMINI"
+echo "Account $ACCOUNT_ID, Region $REGION, stack $STACK_NAME, Gemini $GEMINI, browser agent $BROWSER_AGENT"
 echo "Image $IMAGE_URI"
 
 # 1. Only a test stack is ever updated.

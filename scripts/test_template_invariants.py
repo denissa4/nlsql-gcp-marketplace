@@ -195,9 +195,16 @@ class Paths(Case):
         text = self.mutate("Values: [/api/messages, /callback, /health]", "Values: [/api/messages, /callback, /api/*]")
         self.assertFails(text, self.CHECK, "ListenerRuleCore (priority 10) forwards")
 
-    def test_a_browser_view_without_gemini_fails(self):
-        text = self.mutate("    Condition: GeminiEnabled\n    Properties:\n      ListenerArn", "    Properties:\n      ListenerArn")
-        self.assertFails(text, self.CHECK, "ListenerRuleBrowserView (priority 30) needs Condition 'GeminiEnabled'")
+    def test_a_browser_view_without_the_browser_agent_condition_fails(self):
+        text = self.mutate("    Condition: BrowserAgentEnabled\n    Properties:\n      ListenerArn",
+                           "    Properties:\n      ListenerArn")
+        self.assertFails(text, self.CHECK, "ListenerRuleBrowserView (priority 30) needs Condition 'BrowserAgentEnabled'")
+
+    def test_a_browser_view_only_with_gemini_fails(self):
+        # Without Gemini the browser agent runs on the Bedrock model: its view does not depend on Gemini
+        text = self.mutate("    Condition: BrowserAgentEnabled\n    Properties:\n      ListenerArn",
+                           "    Condition: GeminiEnabled\n    Properties:\n      ListenerArn")
+        self.assertFails(text, self.CHECK, "ListenerRuleBrowserView (priority 30) needs Condition 'BrowserAgentEnabled'")
 
     def test_a_rule_without_the_origin_header_fails(self):
         old = ("      Priority: 20\n      Conditions:\n        - Field: http-header\n          HttpHeaderConfig:\n"
@@ -215,8 +222,23 @@ class Paths(Case):
         self.assertFails(text, self.CHECK, "ListenerRuleAssets: priority 25 is not one of")
 
     def test_an_unconditional_browser_view_output_fails(self):
-        text = self.mutate("    Condition: GeminiEnabled\n    Description: The live browser", "    Description: The live browser")
-        self.assertFails(text, self.CHECK, "the BrowserViewUrl output needs Condition GeminiEnabled")
+        text = self.mutate("    Condition: BrowserAgentEnabled\n    Description: The live browser",
+                           "    Description: The live browser")
+        self.assertFails(text, self.CHECK, "the BrowserViewUrl output needs Condition BrowserAgentEnabled")
+
+    def test_a_missing_browser_view_output_fails(self):
+        old = ("  BrowserViewUrl:\n    Condition: BrowserAgentEnabled\n"
+               "    Description: The live browser viewer (BrowserAgent Enabled only).\n"
+               "    Value: !Sub 'https://${Distribution.DomainName}/vnc/'\n")
+        self.assertFails(self.mutate(old, ""), self.CHECK, "the BrowserViewUrl output is missing")
+
+    def test_a_browser_agent_switch_set_only_with_the_browser_agent_fails(self):
+        old = "            - {Name: BROWSER_AGENT_ENABLED, Value: !If [BrowserAgentEnabled, 'true', 'false']}\n"
+        new = ("            - !If\n              - BrowserAgentEnabled\n"
+               "              - {Name: BROWSER_AGENT_ENABLED, Value: 'true'}\n"
+               "              - !Ref AWS::NoValue\n")
+        self.assertFails(self.mutate(old, new), "environment and secrets placement",
+                         "BROWSER_AGENT_ENABLED must be set exactly once, unconditionally")
 
 
 class Tables(Case):

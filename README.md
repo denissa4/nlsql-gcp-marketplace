@@ -39,7 +39,7 @@ with each user's Microsoft 365 mail, calendar and OneDrive.
 | Container port | 8080; the container runs as uid 10001 |
 | Public endpoint | CloudFront (HTTPS, default certificate) in front of an HTTP load balancer that rejects direct requests and every path but the product's own |
 | LLM | Claude on Amazon Bedrock through global inference profiles and the task role; no API keys. Default `global.anthropic.claude-sonnet-5-5` |
-| Optional | Google Gemini (browser agent with a live view, image reading), only with the buyer's own key, off by default |
+| Browser agent and image reading | the browser agent on by default (`BrowserAgent`), image reading always: on the Bedrock model, or optionally on Google Gemini with the buyer's own key (off by default), falling back to Bedrock whenever Gemini fails |
 | Storage | 2 DynamoDB tables and 2 S3 buckets the stack creates, kept when it is deleted |
 | Channels | every Azure Bot Service channel the buyer enables; the Microsoft 365 features in Teams only |
 
@@ -52,7 +52,7 @@ with each user's Microsoft 365 mail, calendar and OneDrive.
 | RegisterUsage public key version | `1` (Active in the product entity's `SignatureVerificationKeys`) |
 | Public key | baked by the app as `marketplace/aws_marketplace_pubkey_v1.pem` (app item B11), sha256 `68f9c9b44a3bf144a3292718879681231ab20719386792c8aa2559c82f86d2c1`, the Makefile's `PUBKEY_SHA256`. `push` and `push-test` refuse any other key, including the app's earlier placeholder (sha256 `c0dc17d4a034c0f42d73a806bd6b0449c5ad3a18d307db14528579160829ae5b`) |
 | ECR repository | `709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee` (in the product entity's `Repositories`) |
-| Current version | `1.0.1` (local tag `ai-employee-aws:1.0.1`) |
+| Current version | `1.0.2` (local tag `ai-employee-aws:1.0.2`) |
 
 ## Layout
 
@@ -100,7 +100,7 @@ names against that table when the app checkout is at `../ai-employee-aws`. The l
 - **CloudFront terminates TLS**, because Bot Framework refuses plain HTTP and the load balancer
   has no certificate. With the default certificate CloudFront applies its **TLSv1** security
   policy whatever `MinimumProtocolVersion` says, so none is set and the guide says so; a TLS 1.2
-  minimum needs a custom domain, which 1.0.1 does not offer. The distribution caches nothing (TTL
+  minimum needs a custom domain, which 1.0.2 does not offer. The distribution caches nothing (TTL
   0), forwards query strings, cookies and 8 headers (the 4 `Sec-WebSocket-*` among them, never
   `Referer`, since the viewer's URL carries its token), uses `PriceClass_100` and
   `OriginReadTimeout` 60. The CloudFront-to-ALB hop is HTTP, so Security Hub control CloudFront.9
@@ -109,8 +109,9 @@ names against that table when the app checkout is at `../ai-employee-aws`. The l
   `com.amazonaws.global.cloudfront.origin-facing` prefix list (per-Region IDs in `RegionMap`; it
   counts as 55 inbound rules). The listener answers 403 by default. Three rules forward only
   requests carrying `X-Origin-Verify` with the stack's UUID (`!Select [2, !Split ['/', !Ref
-  AWS::StackId]]`): core `/api/messages`, `/callback`, `/health`; assets `/static/*`; and, only
-  with `GeminiFeatures` Enabled, the live view `/vnc/*`, `/websockify/*`, `/api/browser-use/*`.
+  AWS::StackId]]`): core `/api/messages`, `/callback`, `/health`; assets `/static/*`; and the
+  live view `/vnc/*`, `/websockify/*`, `/api/browser-use/*` with `BrowserAgent` Enabled, the
+  default (before 1.0.2, with `GeminiFeatures` Enabled).
   `/api/prompt`, `/proactive` and `/validate-vnc` are internal and never routed; the image's nginx
   serves nothing else either. The idle timeout is 3600 s for the live view's WebSockets. A v2
   coder adds priority 40 (`/mcp/oauth/callback`).
@@ -135,9 +136,15 @@ names against that table when the app checkout is at `../ai-employee-aws`. The l
   the template.
 - **Gemini gating.** `GeminiFeatures` defaults to `Disabled`. Only under `GeminiEnabled` does the
   template add the `GEMINI_API_KEY` secret (a `ValueFrom` naming an absent JSON key would stop the
-  task), `GEMINI_MODEL` (default `gemini-3.8-flash`), the live-view rule and the `BrowserViewUrl`
-  output. Without it nothing is sent to Google, and the image offers neither the browser agent
-  nor image reading. `BROWSER_USE_HOST` is set either way: the cards' images need it.
+  task) and `GEMINI_MODEL` (default `gemini-3.8-flash`). Without it nothing is sent to Google,
+  and the browser agent and image reading run on the Bedrock model (app 1.0.2; before, the image
+  offered neither, and the live-view rule and the `BrowserViewUrl` output were gated too). With
+  it they run on Gemini and fall back to Bedrock on any Gemini error. `BROWSER_USE_HOST` is set
+  either way: the cards' images and the live browser's links need it.
+- **Browser agent switch.** `BrowserAgent` (default `Enabled`) sets `BROWSER_AGENT_ENABLED` to
+  `true` or `false`, and gates the live-view rule and the `BrowserViewUrl` output (condition
+  `BrowserAgentEnabled`). Disabled, the image offers no browser agent and the welcome and
+  `/help` do not mention browsing; image reading stays.
 - **Retention.** The two tables (PAY_PER_REQUEST, SSE, point-in-time recovery) and the two buckets
   (SSE-S3, public access blocked, TLS only) are `RetainExceptOnCreate` with `UpdateReplacePolicy`
   Retain: deleting the stack keeps the users' data, and only a failed first creation removes it.
@@ -183,7 +190,7 @@ Validate any change before publishing: `make validate` (needs AWS credentials; i
 |---|---|
 | `check-vars` | the template's `ImageUri` default is `$(IMAGE):$(VERSION)` and its product code is the baked one; with `../ai-employee-aws` (`APP_REPO`) checked out, which must be on `aws-marketplace-offer`, compares the app's baked code, its three trusted sets and the key hash; the release notes exist; the usage instructions and guide name the image and version; the copies in `deploy-test.sh`; then `guide-check` |
 | `guide-check` | offline: the guide's Regions, model table, parameter and output tables equal the template's, its in-page links resolve, and (with the app) every message it quotes is in the app's Exact strings |
-| `template-invariants` | offline: env names against the contract, Gemini gating, the path allowlist, the key schema, Regions against `RegionMap`, the size, the `ENCRYPTION_KEY` pin, the hardening, the model list |
+| `template-invariants` | offline: env names against the contract, Gemini gating, the path allowlist and the `BrowserViewUrl` output (both under `BrowserAgentEnabled`), the key schema, Regions against `RegionMap`, the size, the `ENCRYPTION_KEY` pin, the hardening, the model list |
 | `test-scripts` | offline unit tests of every script here, each check failing on a planted defect |
 | `validate` | `template-invariants`, `validate-template` (AWS credentials) and cfn-lint 1.57.2 |
 | `push-guard` | offline: refuses `$(LOCAL_IMAGE)` unless it is the enforce build with the product's key and code, uid 10001, 8080 only, one linux/amd64 manifest, no sshd, no `.env*`, no stray PEM, no test files, no `change-me-in-production`, version `$(VERSION)`; records the accepted image ID |
@@ -266,6 +273,10 @@ make deploy-test ENV_FILE=<path-to-local-env-file> GEMINI=off
 make e2e-test    ENV_FILE=<path-to-local-env-file>
 make deploy-test ENV_FILE=<path-to-local-env-file> GEMINI=on            # same stack, switched
 make e2e-test    ENV_FILE=<path-to-local-env-file> E2E_ARGS="--restart-probe"
+# with a Gemini key that fails (no credits): Bedrock must take over
+make e2e-test    ENV_FILE=<path-to-local-env-file> E2E_ARGS="--gemini-fallback"
+make deploy-test ENV_FILE=<path-to-local-env-file> GEMINI=off BROWSER_AGENT=Disabled  # no browser agent
+make e2e-test    ENV_FILE=<path-to-local-env-file>
 make destroy-test PURGE_DATA=1                                          # stack, secret, capture function, data
 ```
 
@@ -304,12 +315,12 @@ activity carries an Entra ID client-credentials token for the bot's own app. It 
 encoded traversal and a forged OAuth state, acks under 8 s, the welcome and `/help` for the
 stack's features, exactly one answer per question, the storage round trip, login, attachments,
 `/schedule`, identity (a Direct Line sender reusing the Teams user's ID gets a separate, empty
-conversation), and log hygiene since the stack was created. With Gemini off, the live view must
-be absent; with Gemini on, the live browser through the Teams dialog (`task/fetch`), WSS and RFB
-through CloudFront kept idle for `--ws-idle` seconds (default 900, S4), 403 for missing, tampered
-or stale tokens, close-session, and `read_image` on an RGB PNG, a 16-bit TIFF and a CMYK JPEG
-with the real Gemini model (S7). The capture function is removed at the end, also when the run
-fails, unless `--keep-capture`.
+conversation), and log hygiene since the stack was created. With Gemini on or off, the live
+browser through the Teams dialog (`task/fetch`), WSS and RFB through CloudFront kept idle for
+`--ws-idle` seconds (default 900, S4), 403 for missing, tampered or stale tokens, close-session,
+and `read_image` on an RGB PNG, a 16-bit TIFF and a CMYK JPEG (S7), on Bedrock or on the real
+Gemini model; `--gemini-fallback` expects Gemini's failure lines and Bedrock's answers. The
+capture function is removed at the end, also when the run fails, unless `--keep-capture`.
 
 **S1, one real Converse call per model.** For each `LanguageModel` value the seller account has
 enabled, `make deploy-test ENV_FILE=<path> LANGUAGE_MODEL=<model>` and look for
@@ -369,7 +380,7 @@ the org catalog. Then, on Teams desktop, web and mobile:
 - S5: these turns run on `@microsoft/agents-hosting` 1.9.1 with the msal-node 7 and zod 4
   overrides: JWT validation against the live keys, the client-secret token, streamed card edits,
   proactive delivery and invoke routing all work;
-- with Gemini: **Open live browser** opens the Teams dialog (S4: from the bot's card and from a
+- **Open live browser** opens the Teams dialog (S4: from the bot's card and from a
   proactive card); the viewer page loads under its CSP (cursor, clipboard, the WebSocket);
   takeover and Stop work; two users at once each see only their own browser; through noVNC,
   Ctrl+P opens nothing, the live browser starts on a blank page, and `file:///proc/1/environ` and
@@ -435,8 +446,9 @@ tested: the owner's decision, the test key had no credits).
   two tables and two buckets the stack creates and keeps.
 - **Secrets.** The buyer's secret holds `AppPassword` and the optional `GeminiApiKey`; the stack
   generates `ENCRYPTION_KEY`, pinned by hash; the per-task keys come from the image.
-- **Optional Gemini.** `GeminiFeatures` gates the key, the model, the live-view route and output,
-  and the Teams help tab.
+- **Optional Gemini and browser agent.** `GeminiFeatures` gates the key and the model;
+  `BrowserAgent` gates the browser agent, its live-view route and output and the Teams help tab
+  (before 1.0.2, `GeminiFeatures` gated all of them).
 - **A path allowlist** of three listener rules instead of one forward rule, an 8-header CloudFront
   allowlist with the WebSocket headers, and a 3600 s ALB idle timeout.
 - **All Bot Service channels** are served; the Microsoft 365 features stay Teams-only, and a user
@@ -503,9 +515,10 @@ tested: the owner's decision, the test key had no credits).
       step 5 and `listing/README.md`, with the image pushed by `make push`.
 - [ ] T1: test stack in us-east-1, entitled run.
 - [ ] T6: both fail-closed runs ([Testing](#testing-in-the-seller-account)).
-- [ ] `make e2e-test` on the final image with GEMINI=off, and with GEMINI=on including S4 (WSS idle
-      at least 15 minutes) and S7 (`gemini-3.8-flash` with browser-use and `read_image`); once more
-      with `STREAMING=true` and `--restart-probe`.
+- [ ] `make e2e-test` on the final image with GEMINI=off (the browser agent and `read_image` on
+      Bedrock), and with GEMINI=on including S4 (WSS idle at least 15 minutes) and S7
+      (`gemini-3.8-flash` with browser-use and `read_image`), or `--gemini-fallback` with a key
+      that fails; once more with `STREAMING=true` and `--restart-probe`.
 - [ ] S1: one real Converse call per `LanguageModel` value.
 - [ ] S5: a real Teams turn on agents-hosting 1.9.1 with msal-node 7 and zod 4.
 - [ ] The manual Teams test above, including Ctrl+P opening nothing and the blank start page in

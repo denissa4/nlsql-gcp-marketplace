@@ -7,7 +7,7 @@ WHAT IT DOES
 - Memory: remembers what the user asks it to.
 - Scheduling: one-off and recurring tasks set in plain language, a daily morning briefing, and alerts for important email, with draft replies, and for upcoming meetings, delivered into the user's chat.
 - Your choice of Claude model on Amazon Bedrock: Claude Sonnet 5.5 (default), Opus 5, Opus 5.5, Opus 4.8, Sonnet 5, Sonnet 4.6 or Haiku 4.5.
-- Optional, with your own Google Gemini API key: a browser agent that opens websites and fills in forms for the user, in a live browser they can watch and take over, and image reading. Without a key these features are not offered, and nothing is sent to Google.
+- A browser agent that opens websites and fills in forms for the user, in a live browser they can watch and take over, and image reading. Optional, with your own Google Gemini API key: both run on Gemini, falling back to Claude. Without a key they run on Claude, and nothing is sent to Google. The browser agent can be turned off.
 - Other Azure Bot Service channels you enable (Web Chat, Direct Line, Telegram and others) work too, without the Microsoft 365 features.
 
 HOW IT RUNS
@@ -19,7 +19,7 @@ SECURITY AND DATA
 - AWS services are called only through the task's IAM role, limited to the stack's own resources. No AWS access keys are used.
 - The container runs as a non-root user on Debian 13, Python 3.13 and Node.js 24, and verifies your AWS Marketplace subscription before it serves any request.
 - Claude is called through Amazon Bedrock global cross-Region inference, which may process prompts in any commercial AWS Region.
-- With Gemini, pages and images go to Google under your key's terms; use a paid-tier key for business data. There is no network-reachable VNC service: viewer access requires a signed per-session token. The browser runs without Chromium's sandbox, which AWS Fargate cannot provide, so run the task in isolated subnets.
+- Browser pages and images go to Claude on Amazon Bedrock, or with Gemini to Google under your key's terms; use a paid-tier key for business data. There is no network-reachable VNC service: viewers need a signed per-session token. The browser runs without Chromium's sandbox, which AWS Fargate cannot provide: run the task in isolated subnets, or turn it off.
 
 WHAT YOU NEED
 - An AWS account subscribed to this product, with your Claude model enabled in Amazon Bedrock.
@@ -29,6 +29,6 @@ WHAT YOU NEED
 PRICING
 A fixed monthly subscription for the software. AWS infrastructure (AWS Fargate, Elastic Load Balancing, Amazon CloudFront, DynamoDB, S3 and others) and Amazon Bedrock usage, scheduled tasks and alerts included, are billed to your AWS account separately. Microsoft licences, the Azure subscription and an optional Gemini key are your own.
 
-This product requires an ongoing internet connection. The following ongoing external services are required to properly function: AWS Marketplace Metering Service, Amazon Bedrock, Amazon DynamoDB, Amazon S3, AWS Secrets Manager, Amazon CloudWatch Logs, Amazon CloudFront, Amazon ECR, Microsoft Azure Bot Service (an Azure Bot in your Microsoft Azure subscription, with its Microsoft Teams channel, plus any other channel you enable on it), the Microsoft Bot Framework Bot Connector, Microsoft Entra ID, Microsoft Graph (each user's mail, calendar and OneDrive, in Teams, after that user signs in) and the Microsoft Teams and SharePoint file hosts (files sent to the bot). Optional, only if you enable it with your own key: the Google Gemini API, the public websites the browser agent opens at a user's request and, in Teams, the Microsoft Teams JavaScript SDK from res.cdn.office.net in the viewer's browser.
+This product requires an ongoing internet connection. The following ongoing external services are required to properly function: AWS Marketplace Metering Service, Amazon Bedrock, Amazon DynamoDB, Amazon S3, AWS Secrets Manager, Amazon CloudWatch Logs, Amazon CloudFront, Amazon ECR, Microsoft Azure Bot Service (an Azure Bot in your Microsoft Azure subscription, with its Microsoft Teams channel, plus any other channel you enable on it), the Microsoft Bot Framework Bot Connector, Microsoft Entra ID, Microsoft Graph (each user's mail, calendar and OneDrive, in Teams, after that user signs in), the Microsoft Teams and SharePoint file hosts (files sent to the bot), the public websites the browser agent opens at a user's request and, in Teams, the Microsoft Teams JavaScript SDK from res.cdn.office.net in the viewer's browser. Optional, only if you enable it with your own key: the Google Gemini API.
 
 This product extends the functionality of Microsoft Teams and without it, this product has very limited utility. Please note that Microsoft Teams might require its own license for full functionality with this listing.

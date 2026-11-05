@@ -4,16 +4,16 @@ The complete instructions for deploying NLSQL AI Employee from AWS Marketplace o
 with AWS Fargate. The listing's **Usage instructions** field is capped at 4000 characters, so
 it carries a condensed form and links here.
 
-Applies to NLSQL AI Employee **1.0.1**, image
-`709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee:1.0.1`, and the template
+Applies to NLSQL AI Employee **1.0.2**, image
+`709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee:1.0.2`, and the template
 `cloudformation/nlsql-ai-employee-ecs-fargate.yaml` at the same commit as this document.
 
 NLSQL AI Employee is an AI assistant for Microsoft Teams, using Claude on Amazon Bedrock. In
 Teams, once a user signs in to Microsoft 365, it reads and sends their email, manages their
 calendar and works with their OneDrive files. It reads documents sent to it, runs tasks on a
 schedule, sends a daily morning briefing and can watch for important email and upcoming meetings.
-With the optional Google Gemini features it also browses the web for the user, in a live browser
-they can watch and take over, and reads images. The other Azure Bot Service channels (Web Chat,
+It also browses the web for the user, in a live browser they can watch and take over, and reads
+images, on your Bedrock model or, optionally, on Google Gemini with your own key. The other Azure Bot Service channels (Web Chat,
 Direct Line, Telegram and the rest) work too, without the Microsoft 365 features.
 
 **Contents**
@@ -42,7 +42,7 @@ Direct Line, Telegram and the rest) work too, without the Microsoft 365 features
 ```
 Microsoft Teams ──► Microsoft Bot Connector     users' browsers: the Microsoft 365
 (and any other Bot Service │  HTTPS, Bot          sign-in redirect, and the live
- channel you enable)       │  Framework token     browser view (Gemini only)
+ channel you enable)       │  Framework token     browser view
                            ▼                               │
 CloudFront distribution           ◄────────────────────────┘
       │  HTTPS at the edge, CloudFront's own certificate
@@ -60,7 +60,7 @@ ECS Fargate task (exactly one)    ← NLSQL AI Employee container, uid 10001
       ├──► Microsoft Entra ID, Microsoft Graph (sign-in; mail, calendar, OneDrive; Teams only)
       ├──► Microsoft Bot Connector             (replies) and the Teams/SharePoint file hosts
       ├──► Google Gemini API                   (optional: browser agent and image reading)
-      └──► public websites                     (optional: the browser agent's browsing)
+      └──► public websites                     (the browser agent's browsing)
 ```
 
 | Resource | Notes |
@@ -92,9 +92,9 @@ answers 404 to anything else that reaches it.
 | `/callback` | the user's browser, back from the Microsoft 365 sign-in | always |
 | `/health` | the load balancer, and you | always |
 | `/static/*` | Teams and the other channels, for the chat cards' images | always |
-| `/vnc/*` | the user's browser: the live browser's viewer page | `GeminiFeatures=Enabled` only |
-| `/websockify/*` | the viewer page's WebSocket to the live browser | `GeminiFeatures=Enabled` only |
-| `/api/browser-use/*` | the viewer page: open and stop the session | `GeminiFeatures=Enabled` only |
+| `/vnc/*` | the user's browser: the live browser's viewer page | `BrowserAgent=Enabled` (the default) only |
+| `/websockify/*` | the viewer page's WebSocket to the live browser | `BrowserAgent=Enabled` (the default) only |
+| `/api/browser-use/*` | the viewer page: open and stop the session | `BrowserAgent=Enabled` (the default) only |
 
 **Why CloudFront is in the path.** Microsoft Bot Framework refuses a plain HTTP messaging
 endpoint, Microsoft Entra ID refuses a plain HTTP redirect URI, and the load balancer has no
@@ -114,7 +114,7 @@ finding is expected and accepted.
 **TLS at the edge.** With CloudFront's default certificate, CloudFront applies its **TLSv1**
 security policy: the distribution still accepts TLS 1.0 and 1.1 from a client that offers
 nothing newer. The Microsoft Bot Connector and current browsers negotiate TLS 1.2 or 1.3. A
-TLS 1.2 minimum needs a custom domain with its own certificate, which version 1.0.1 does not
+TLS 1.2 minimum needs a custom domain with its own certificate, which version 1.0.2 does not
 offer. CloudFront forwards no `Referer` header, because the live viewer's address carries its
 token.
 
@@ -137,16 +137,18 @@ you enable), and the bot's own app registration. Anything else, for example anot
 Microsoft Entra tenant that obtains a token for the bot, gets `401`, and the log shows
 `[auth] rejected a request from an unexpected caller (iss=<iss>, appid=<appid>)`.
 
-**How the live browser view is protected** (Gemini only). There is **no network-reachable VNC
+**How the live browser view is protected.** There is **no network-reachable VNC
 service**: the VNC server and its WebSocket relay listen only on unix sockets inside the task,
 and viewer access requires a signed per-session token. A token is minted only into the user's
 own chat, names one browser session and one user, is valid for about an hour and only while that
 session is the user's live one, and is signed with a key that is new for every task. See
 [The live browser](#the-live-browser).
 
-**What is off without Gemini, and in this version.** With `GeminiFeatures=Disabled` (the
-default) the browser agent, its live view and image reading are not offered, and nothing is
-sent to Google. Code mode, which needs a separate coder service, is not part of version 1.0.1.
+**The browser agent can be turned off; Gemini is optional; code mode is not in this version.**
+With `BrowserAgent=Disabled` the browser agent is not offered and its live view's paths are not
+routed; image reading stays on. With `GeminiFeatures=Disabled` (the default) the browser agent,
+its live view and image reading run on your Bedrock language model, and nothing is sent to
+Google. Code mode, which needs a separate coder service, is not part of version 1.0.2.
 
 ## 2. What it costs
 
@@ -165,6 +167,7 @@ us-east-1 (730 hours):
 | Application Load Balancer | ~$16.40 plus LCU charges (~$6 at light traffic) |
 | Public IPv4 addresses (load balancer in two AZs, plus the task) | ~$11 ($0.005 per address-hour) |
 | CloudFront | the always-free tier covers 1 TB and 10 million requests a month; then ~$0.085/GB. An open live view streams the screen while someone watches |
+| Amazon Bedrock for the browser agent | without Gemini, each step of a browser task is one model call with a screenshot of the page; a task of 20 steps costs about as much as 20 long chat answers with an image each |
 | DynamoDB | on-demand reads and writes, storage, and point-in-time recovery per GB-month; small for chat-sized data |
 | S3 | ~$0.023 per GB-month, plus requests |
 | Secrets Manager | 2 secrets (yours and the generated `ENCRYPTION_KEY`), ~$0.40 each, plus $0.05 per 10,000 API calls |
@@ -291,18 +294,18 @@ done
 az ad app permission admin-consent --id "$APP_ID"
 ```
 
-**Optional: a Google Gemini API key**, only for the browser agent and image reading (see
-[The optional Gemini features](#the-optional-gemini-features)). Without one, leave
-`GeminiFeatures=Disabled`.
+**Optional: a Google Gemini API key**, to run the browser agent and image reading on Gemini
+instead of your Bedrock model (see [The optional Gemini features](#the-optional-gemini-features)).
+Without one, leave `GeminiFeatures=Disabled`: both features then run on Bedrock.
 
 **Networking.** Two or more **public** subnets (route to an internet gateway) in different
 Availability Zones of one VPC. The load balancer is internet-facing, and by default the task runs
 in the same subnets with a public IP (`AssignPublicIp=ENABLED`) to reach the Metering Service,
-Bedrock, DynamoDB, S3, Microsoft and, with Gemini, Google and the websites the browser agent
-visits. Attachments are downloaded over IPv4 or native IPv6; a network with DNS64/NAT64 only does
+Bedrock, DynamoDB, S3, Microsoft, the websites the browser agent visits and, with Gemini,
+Google. Attachments are downloaded over IPv4 or native IPv6; a network with DNS64/NAT64 only does
 not work.
 
-**With Gemini on, the browser agent browses the internet from inside the task**, and its
+**The browser agent browses the internet from inside the task** (unless `BrowserAgent=Disabled`), and its
 Chromium runs without its own sandbox (see [The live browser](#the-live-browser)). Run the task
 in subnets with **no route to sensitive internal systems**: pass **`TaskSubnetIds`** with private
 subnets behind a NAT gateway that reach the internet and nothing else you care about, or keep the
@@ -396,7 +399,8 @@ aws cloudformation create-stack \
     ParameterKey=GeminiFeatures,ParameterValue=Disabled
 ```
 
-For the Gemini features, pass `GeminiFeatures=Enabled`, with `GeminiApiKey` in the secret.
+To run the browser agent and image reading on Gemini, pass `GeminiFeatures=Enabled`, with
+`GeminiApiKey` in the secret.
 
 ### Every parameter
 
@@ -414,12 +418,13 @@ For the Gemini features, pass `GeminiFeatures=Enabled`, with `GeminiApiKey` in t
 | `ConversationMemoryTokens` | no | `8000` | `8000`, `16000`, `32000` or `64000`: how much of each conversation the model sees; older messages are summarized. More costs more per answer |
 | `Streaming` | no | `false` | `true` shows answers in Microsoft Teams (and Telegram) as they are generated, in one message that grows; other channels get each answer in one message either way |
 | `AdditionalInstructions` | no | empty | up to 4000 characters added to the built-in system prompt, for every user |
-| `GeminiFeatures` | no | `Disabled` | `Enabled` turns on the browser agent, its live view and image reading; the secret must then hold `GeminiApiKey` |
+| `BrowserAgent` | no | `Enabled` | `Disabled` turns the browser agent and its live view off; image reading stays on |
+| `GeminiFeatures` | no | `Disabled` | `Enabled` runs the browser agent and image reading on Google Gemini, and on the Bedrock model whenever Gemini fails; the secret must then hold `GeminiApiKey`. `Disabled` runs both on the Bedrock model |
 | `GeminiModel` | no | `gemini-3.8-flash` | `gemini-3.8-flash`, `gemini-3.6-flash` or `gemini-3.5-flash-lite`; used only with Gemini on |
 | `TaskCpu` | no | `2048` | `2048` or `4096` CPU units; with `4096` every deployment stops the old task first |
 | `TaskMemory` | no | `8192` | MiB; 4096–16384 with 2048 CPU, 8192–30720 with 4096 CPU |
 | `EphemeralStorage` | no | `40` | task disk in GiB, 30–200; the image counts against it |
-| `ImageUri` | no | the 1.0.1 image | leave alone unless pinning another published version |
+| `ImageUri` | no | the 1.0.2 image | leave alone unless pinning another published version |
 
 The template refuses to create a stack in an unsupported Region, or with a CPU and memory pair
 Fargate does not offer. It cannot see inside your secret: with `GeminiFeatures=Enabled` and no
@@ -508,7 +513,7 @@ aws cloudformation describe-stacks --stack-name nlsql-ai-employee --region <regi
 | `MessagingEndpoint` | `https://<id>.cloudfront.net/api/messages`: **paste this into the Azure Bot** |
 | `OAuthRedirectUri` | `https://<id>.cloudfront.net/callback`: **add this to the bot's app registration** |
 | `CloudFrontDomain` | the deployment's domain, `<id>.cloudfront.net`; the Teams package's `validDomains` |
-| `BrowserViewUrl` | `https://<id>.cloudfront.net/vnc/`, the live browser's viewer (Gemini only) |
+| `BrowserViewUrl` | `https://<id>.cloudfront.net/vnc/`, the live browser's viewer (`BrowserAgent=Enabled` only) |
 | `HealthCheck` | `https://<id>.cloudfront.net/health`: 200 once the subscription is verified, 503 before |
 | `UsersTableName` | the DynamoDB table of Microsoft 365 sign-ins |
 | `TasksTableName` | the DynamoDB table of scheduled tasks, briefings and watches, and of the conversation references that the bot's own messages are sent through |
@@ -547,8 +552,8 @@ The repository's [`teams/`](../teams/README.md) folder holds a manifest template
 `build-package.sh`, which builds the Teams package from your stack's outputs with no values typed
 by hand. The manifest uses **personal scope** with `supportsFiles: true`, because Teams delivers
 files to a bot only in one-to-one chats, and lists the deployment's domain in `validDomains`,
-which the live browser's Teams dialog needs. With Gemini on, it also adds a **Browser-Use** tab,
-which is a help page: the live browser itself opens from the chat (see
+which the live browser's Teams dialog needs. With the browser agent on, it also adds a
+**Browser-Use** tab, which is a help page: the live browser itself opens from the chat (see
 [The live browser](#the-live-browser)).
 
 In AWS CloudShell, in the stack's Region, fetch the four files at the commit the listing links
@@ -567,12 +572,14 @@ teams/build-package.sh --stack nlsql-ai-employee
 It reads the stack once and writes `teams/manifest.json` and `teams/nlsql-ai-employee-teams.zip`.
 From a clone of the repository at that commit, `teams/build-package.sh --stack <stack-name>` is
 enough. Without AWS access, `teams/build-package.sh --app-id <microsoft-app-id> --domain
-<cloudfront-domain>` (add `--browser-view` only with Gemini on) makes no AWS call.
+<cloudfront-domain>` makes no AWS call; add `--no-browser-view` for a stack with
+`BrowserAgent=Disabled`.
 
 Upload the zip in Teams (**Apps**, **Manage your apps**, **Upload an app**), or have a Teams
 administrator publish it for the organisation in the Teams admin center (**Teams apps**,
 **Manage apps**, **Upload new app**). Build and upload it again, with a higher `--version`, when
-the domain changes or Gemini is switched on or off.
+the domain changes, or `BrowserAgent` is switched (which adds or removes the Browser-Use tab),
+and once after updating a stack made from a template older than 1.0.2 with Gemini off.
 
 ## Step 5 — Verify
 
@@ -596,15 +603,15 @@ means `RegisterUsage` succeeded and AWS is metering this task. The line
 Claude model.
 
 **In Teams.** Open the app. The bot greets you with `**Welcome! I'm NLSQL AI Employee.**`
-followed by what it can do; without Gemini that is
-`I can read and send your email, manage your calendar, read documents, and run tasks on a schedule.`
+followed by what it can do:
+`I can read and send your email, manage your calendar, browse the web while you watch, read documents and images, and run tasks on a schedule.`
 Then:
 
 1. Type `login`, select the sign-in button, and sign in with your Microsoft 365 account. The page
    that opens confirms the sign-in; go back to the chat.
 2. Ask a calendar question, for example "What is on my calendar tomorrow?".
 3. Send a PDF or Word file and ask about it.
-4. With Gemini on: ask it to open a website and find something. A card says
+4. With the browser agent on: ask it to open a website and find something. A card says
    `Your live browser is ready.`; select **Open live browser** to watch it in a Teams dialog.
 
 This is the only end-to-end proof that Teams, CloudFront, the container, Bedrock and Microsoft
@@ -650,8 +657,8 @@ reached, it is kept in the uploads bucket. The agent adds to it when asked to re
 
 ## The optional Gemini features
 
-`GeminiFeatures=Enabled`, with `GeminiApiKey` in the secret, turns on two features that call the
-**Google Gemini API** with **your own key**:
+Two features run on your Bedrock language model, or, with `GeminiFeatures=Enabled` and
+`GeminiApiKey` in the secret, on the **Google Gemini API** with **your own key**:
 
 - **the browser agent**: it opens websites, clicks, fills in forms and reads pages for the user,
   in a live browser the user can watch and take over ([The live browser](#the-live-browser));
@@ -660,8 +667,10 @@ reached, it is kept in the uploads bucket. The agent adds to it when asked to re
   channels it stays in the task.
 
 Get a key in Google AI Studio (https://aistudio.google.com), for a Google Cloud project with the
-Gemini API enabled, and choose `GeminiModel`. With Gemini off, neither feature is offered to
-users, the live view's paths are not routed, and nothing is sent to Google.
+Gemini API enabled and billing set up, and choose `GeminiModel`. Whenever Gemini fails (no
+credits, an invalid or expired key, a quota used up, a model that is gone), the task goes on
+with your Bedrock model, and the log says so. With Gemini off, both features use Bedrock only,
+and nothing is sent to Google.
 
 **What is sent to Google.** For the browser agent: the task the user gave, and screenshots and
 the text of the pages it visits, including anything the user or the agent typed into them. For
@@ -672,7 +681,8 @@ Gemini API terms.
 
 ## The live browser
 
-Gemini only. The browser agent drives a Chromium browser inside the task, and the user can watch
+Only with `BrowserAgent=Enabled` (the default). The browser agent drives a Chromium browser
+inside the task, and the user can watch
 it, and take over the mouse and keyboard, through a viewer page.
 
 - **In Teams** no link is posted. The bot's card carries an **Open live browser** button, which
@@ -695,7 +705,8 @@ it, and take over the mouse and keyboard, through a viewer page.
   the container, not just a sandboxed renderer. The mitigations: a managed browser policy, an
   environment cleared of credentials, a task role limited to this stack's own resources, and
   regular image updates. **Run the task in isolated subnets** ([Before you start](#3-before-you-start)),
-  and treat what the browser can reach as reachable by the web.
+  and treat what the browser can reach as reachable by the web. If you do not want a browser in
+  the task at all, deploy with `BrowserAgent=Disabled`.
 - **The browser is locked down** by that policy: no extensions, no `chrome://` pages, no
   `file://` URLs, no `devtools://` pages, no printing (so no print dialog; the agent still makes
   PDFs), no Guest windows, no saved passwords or autofill, and new tabs open blank. It cannot open
@@ -711,8 +722,8 @@ The viewer's own states: `Open the live browser from the Open live browser butto
 The bot serves every Azure Bot Service channel you enable on the Azure Bot, not only Teams.
 
 - **Test in Web Chat**, on the Azure Bot's page in the portal, works for a first test as soon as
-  the messaging endpoint is set. It shows `**Welcome! I'm NLSQL AI Employee.**` and, without
-  Gemini, `I can read documents and run tasks on a schedule.`
+  the messaging endpoint is set. It shows `**Welcome! I'm NLSQL AI Employee.**` and
+  `I can browse the web while you watch, read documents and images, and run tasks on a schedule.`
 - **Direct Line, and Web Chat embedded in your own site:** the site chooses each user's ID, so
   **the embedding site is responsible for user identity**. Enable **Enhanced authentication** on
   the Direct Line channel, with your site's origins as trusted origins, and have your server
@@ -776,11 +787,12 @@ and it exits with code **78**. The product's messages below are quoted exactly.
 | Saving a file from a share link to OneDrive fails | share links usually redirect, and only direct https downloads are fetched | download the file and send it in the chat instead |
 | The Browser-Use tab or the viewer says `Open the live browser from the Open live browser button in your chat.` | the tab is only a help page | select **Open live browser** on the bot's card |
 | The viewer says `This link has expired or is not valid. Select Open live browser in the chat again.` | the link is older than about an hour, belongs to an ended or replaced session, or the task was replaced | select **Open live browser** again (or ask again for a link, off Teams) |
-| The viewer keeps reconnecting, or the dialog stays blank | the session ended, a proxy or firewall blocks WebSockets (`wss://`) to `*.cloudfront.net`, or the package was built without the domain in `validDomains` | test from the user's network: `curl -i -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' https://<cloudfront-domain>/websockify/AAAAAAAAAAAAAAAAAAAAAA` should return nginx's HTML `403 Forbidden`, which means the route works and only the token is missing; a plain-text `Forbidden` comes from the load balancer (Gemini off). Rebuild the package with `build-package.sh` |
+| The viewer keeps reconnecting, or the dialog stays blank | the session ended, a proxy or firewall blocks WebSockets (`wss://`) to `*.cloudfront.net`, or the package was built without the domain in `validDomains` | test from the user's network: `curl -i -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' https://<cloudfront-domain>/websockify/AAAAAAAAAAAAAAAAAAAAAA` should return nginx's HTML `403 Forbidden`, which means the route works and only the token is missing; a plain-text `Forbidden` comes from the load balancer (a template older than 1.0.2 with Gemini off). Rebuild the package with `build-package.sh` |
 | The agent says `Too many live browser sessions are running right now. Try again in a few minutes.` | the session cap for the task's size is reached ([Sizing](#every-parameter)) | wait, or raise `TaskMemory` and `TaskCpu` |
 | A scheduled task gets `The browser is busy with a live session right now; try again later.` | the user has a live browser session, which a scheduled task never replaces | schedule it for another time |
-| The bot offers no browsing or image reading; the log shows `Features: browser agent and image recognition are off (no GEMINI_API_KEY or GEMINI_MODEL).` | `GeminiFeatures=Disabled` | update the stack with `GeminiFeatures=Enabled` and the key in the secret, then rebuild the Teams package |
-| Browsing or image requests fail with Gemini on | the key is invalid, its project has no Gemini API, or its quota is used up; the logs show Google's error | fix the key and update the secret ([Rotating credentials](#rotating-credentials)) |
+| The bot offers no browsing; the log shows `Features: the browser agent is off (BROWSER_AGENT_ENABLED).` | `BrowserAgent=Disabled` | update the stack with `BrowserAgent=Enabled`, then rebuild the Teams package |
+| The log shows `Features: no GEMINI_API_KEY or GEMINI_MODEL; the browser agent and image recognition use the main model.` | `GeminiFeatures=Disabled` | nothing to do: both features run on the Bedrock model. For Gemini, update the stack with `GeminiFeatures=Enabled` and the key in the secret |
+| With Gemini on, the log shows `Browser agent: Gemini failed (<error>); the main model (<model>) goes on with the task.` or `Image recognition: Gemini failed (<error>); the main model reads the image.` | the key is invalid or expired, its project has no Gemini API or no billing, its quota is used up, or the model is gone; `<error>` gives Google's status (`429` for credits and quotas, `400` for a key) | the answers still come, from Bedrock. Fix the key and update the secret ([Rotating credentials](#rotating-credentials)), or choose `GeminiFeatures=Disabled` |
 | A scheduled task or briefing comes at the wrong hour | times are UTC | check the next run with `/tasks` |
 | Anything else returns 403 `Forbidden` | only the [public paths](#1-what-gets-deployed) are routed | by design |
 
@@ -872,7 +884,7 @@ permissions it uses:
 | Long-term memory and files | Teams, signed in: the user's OneDrive folder **AI Employee Uploads**; otherwise `UploadsBucketName` under `<user>/` | OneDrive's encryption; SSE-S3 | HTTPS |
 | Files sent in the chat, marked-up images | the task's disk under the user's folder, deleted after at most 24 hours untouched, or when the task ends | Fargate ephemeral storage, AES-256 with AWS-managed keys | TLS from the channel's file host |
 | Live browser sessions (pages, cookies, downloads) | the task's memory and disk, removed when the session ends | Fargate ephemeral storage | — |
-| Prompts to Claude: the conversation, memory, and what tools read, such as email, calendar entries and documents | Amazon Bedrock; a global profile may process a request in any commercial AWS Region. Per AWS, Bedrock does not use prompts or answers to train models or share them with model providers | not stored by Bedrock | HTTPS |
+| Prompts to Claude: the conversation, memory, and what tools read, such as email, calendar entries and documents; without Gemini, or when it fails, also the browser agent's screenshots and page text and the images users ask about | Amazon Bedrock; a global profile may process a request in any commercial AWS Region. Per AWS, Bedrock does not use prompts or answers to train models or share them with model providers | not stored by Bedrock | HTTPS |
 | Pages and images for Gemini (Gemini only) | Google, under your key's terms ([data note](#the-optional-gemini-features)) | Google's | HTTPS |
 | Logs | CloudWatch Logs, 14 days; no secrets, tokens, query strings or conversation content | CloudWatch Logs service encryption | TLS |
 
@@ -1052,14 +1064,14 @@ are required to properly function:
   Graph (the Microsoft 365 features, in Teams), and the Microsoft Teams and SharePoint file hosts
   that files sent to the bot are downloaded from. Any other Bot Service channel you enable adds
   its own service (for example Telegram).
+- **The web**, unless `BrowserAgent=Disabled`: the public websites the browser agent opens at a
+  user's request, and, in Teams, the Microsoft Teams JavaScript SDK from `res.cdn.office.net`,
+  which the live browser's viewer page loads in the user's browser.
 
 Optional:
 
 - **Google Gemini API**, only with `GeminiFeatures=Enabled`, with your own key: the browser agent
-  and image reading ([data note](#the-optional-gemini-features)). With Gemini on, the browser
-  agent also visits the public websites its tasks need.
-- In Teams, the live browser's viewer page loads the Microsoft Teams JavaScript SDK from
-  `res.cdn.office.net` in the user's browser.
+  and image reading ([data note](#the-optional-gemini-features)).
 
 Nothing is downloaded at run time: the browser, the viewer and the chat cards' images are part
 of the image.

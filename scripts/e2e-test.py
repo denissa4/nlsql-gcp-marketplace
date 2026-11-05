@@ -4,22 +4,25 @@
 Usage:
     scripts/e2e-test.py <env-file> [--stack nlsql-ai-employee-test] [--region us-east-1]
                         [--skip-schedule] [--restart-probe] [--ws-idle SECONDS]
-                        [--login-url URL] [--keep-capture]
+                        [--login-url URL] [--keep-capture] [--gemini-fallback]
     scripts/e2e-test.py --teardown [--stack ...]      remove the capture function and its role
 
 --stack defaults to $STACK_NAME, as in deploy-test.sh, else nlsql-ai-employee-test.
 --login-url defaults to $LOGIN_URL (make e2e-test LOGIN_URL='<url>'), which
 keeps the link's signed state out of the command line and make's echo.
-The mode (Gemini on or off) is read from the stack: its GeminiFeatures
-parameter and its BrowserViewUrl output, which must agree.
+The modes are read from the stack: Gemini on or off from its GeminiFeatures
+parameter, and the browser agent from its BrowserAgent parameter, which the
+BrowserViewUrl output must agree with. With Gemini on, --gemini-fallback says
+the stack's Gemini key fails (no credits, say): the browser agent and
+read_image must then go on with Bedrock and log why.
 
 It drives the deployed bot the way Microsoft Teams does, without Teams:
 
 1. A temporary AWS Lambda function URL stands in for the Bot Connector. Its URL
    is sent as the activities' serviceUrl, so the bot's replies (which the SDK
    POSTs to <serviceUrl>/v3/conversations/...) land in its CloudWatch log. It
-   also serves the attachments (a text file with a secret number, and with
-   Gemini on three images with a word in them). A second function URL, on an
+   also serves the attachments (a text file with a secret number, and three
+   images with a word in them). A second function URL, on an
    alias, gives a second host for the token-leak test. It logs whether a
    request carried an Authorization header, never the header itself.
 2. An Entra ID client-credentials token for the bot's own app ID (from the env
@@ -45,12 +48,13 @@ question; the storage round trip (DynamoDB reference, S3 snapshot, refresh);
 login; attachments (the secret number, no token to another host, http and
 link-local URLs refused); /schedule; identity (a Direct Line sender reusing
 the Teams user's ID gets a separate, empty conversation, and the Teams user's
-proactive delivery still reaches Teams); with Gemini off, no browser or image
-tool and no live-view route; with Gemini on, the live browser through the
-Teams dialog (task/fetch), the session lookup, a WSS handshake and RFB
+proactive delivery still reaches Teams); with BrowserAgent Disabled, no
+browser tool, no browsing in the welcome and no live-view route; otherwise the
+live browser, on Gemini or on Bedrock, through the Teams dialog (task/fetch), the session lookup, a WSS handshake and RFB
 through CloudFront kept idle for --ws-idle seconds (default 900, S4), 403 for
 a missing, tampered or stale token, close-session, and read_image on an RGB
-PNG, a 16-bit greyscale TIFF and a CMYK JPEG; and log hygiene since the stack
+PNG, a 16-bit greyscale TIFF and a CMYK JPEG; Gemini's fallback lines, which
+only --gemini-fallback expects; and log hygiene since the stack
 was created (no secret value, no code=, state=, token= or t= value, no
 /v2/credentials/ path, no JWT; the expected start-up lines). Secret values
 are never printed. The capture function is removed at the end, also when the
@@ -114,7 +118,11 @@ STRINGS = {
     "up": '{"status":"UP"}',
     "attachment_refused": "Attachment download refused: <reason>",
     "coder_off": "Features: code mode is off (no CODER_ENDPOINT).",
-    "gemini_off": "Features: browser agent and image recognition are off (no GEMINI_API_KEY or GEMINI_MODEL).",
+    "browser_off": "Features: the browser agent is off (BROWSER_AGENT_ENABLED).",
+    "gemini_unset": ("Features: no GEMINI_API_KEY or GEMINI_MODEL; the browser agent and image recognition use the "
+                     "main model."),
+    "gemini_browser_failed": "Browser agent: Gemini failed (<error>); the main model (<model>) goes on with the task.",
+    "gemini_image_failed": "Image recognition: Gemini failed (<error>); the main model reads the image.",
     "entitlement_verified": ("AWS Marketplace: entitlement verified for NLSQL AI Employee "
                              "(product <code>, region <region>)."),
     "bedrock_probe_ok": "NLSQL AI Employee: Bedrock probe for <model> succeeded.",
@@ -165,15 +173,16 @@ def log(msg):
     print(msg, flush=True)
 
 
-def capability_sentence(microsoft_365, gemini, coder=False):
-    """What the welcome and /help say the user can ask for (bot/features.js)."""
+def capability_sentence(microsoft_365, coder=False, browser=True):
+    """What the welcome and /help say the user can ask for (bot/features.js),
+    with Gemini or without it."""
     things = ["read and send your email", "manage your calendar"] if microsoft_365 else []
-    things += ["browse the web while you watch", "read documents and images"] if gemini else ["read documents"]
+    if browser:
+        things.append("browse the web while you watch")
+    things.append("read documents and images")
     if coder:
         things.append("write code")
     things.append("run tasks on a schedule")
-    if len(things) == 2:
-        return f"I can {things[0]} and {things[1]}."
     return f"I can {', '.join(things[:-1])}, and {things[-1]}."
 
 
@@ -1360,16 +1369,19 @@ class Run:
         self.outputs = {o["OutputKey"]: o["OutputValue"] for o in self.stack.get("Outputs", [])}
         self.params = {p["ParameterKey"]: p.get("ParameterValue", "") for p in self.stack.get("Parameters", [])}
         self.gemini = self.params.get("GeminiFeatures") == "Enabled"
+        self.browser = self.params.get("BrowserAgent", "Enabled") == "Enabled"
         self.endpoint = self.outputs["MessagingEndpoint"]
         self.base = self.endpoint.rsplit("/api/messages", 1)[0]
         self.host = urllib.parse.urlparse(self.base).netloc
         self.log_group = self.outputs["LogGroupName"]
         self.created_ms = int(self.stack["CreationTime"].timestamp() * 1000)
-        log(f"Stack {self.args.stack} (Gemini {'on' if self.gemini else 'off'}), endpoint {self.endpoint}")
-        self.add("mode: GeminiFeatures and BrowserViewUrl agree",
-                 self.gemini == ("BrowserViewUrl" in self.outputs),
-                 f"GeminiFeatures {self.params.get('GeminiFeatures')!r}, BrowserViewUrl "
+        log(f"Stack {self.args.stack} (Gemini {'on' if self.gemini else 'off'}, browser agent "
+            f"{'on' if self.browser else 'off'}), endpoint {self.endpoint}")
+        self.add("mode: BrowserAgent and BrowserViewUrl agree", self.browser == ("BrowserViewUrl" in self.outputs),
+                 f"BrowserAgent {self.params.get('BrowserAgent')!r}, BrowserViewUrl "
                  f"{'present' if 'BrowserViewUrl' in self.outputs else 'absent'}")
+        if self.args.gemini_fallback and not self.gemini:
+            sys.exit("--gemini-fallback needs a stack with GeminiFeatures=Enabled")
 
     # 1. health
     def check_health(self):
@@ -1461,10 +1473,12 @@ class Run:
         for method, path, kwargs in internal:
             ok, detail = alb_403(method, path, **kwargs)
             self.add(f"{method} {path}: the load balancer's 403", ok, detail)
-        if not self.gemini:
-            for path in ("/vnc/", "/websockify/1", "/api/browser-use/session"):
-                ok, detail = alb_403("GET", path)
-                self.add(f"Gemini off: GET {path} gets the load balancer's 403", ok, detail)
+        for path in ("/vnc/", "/websockify/1", "/api/browser-use/session"):
+            refused, detail = alb_403("GET", path)
+            if self.browser:
+                self.add(f"GET {path} is routed to the task, with Gemini on or off", not refused, detail)
+            else:
+                self.add(f"browser agent off: GET {path} gets the load balancer's 403", refused, detail)
 
         self.edge_since = int(time.time() * 1000) - 2000
         for path in ("/vnc/%2e%2e/api/prompt", "/static/..%2f..%2fapi/prompt",
@@ -1528,24 +1542,22 @@ class Run:
         self.seen_ids.update(r["returned_id"] for r in got)
         texts = [activity_text(r["final"]) for r in got]
         text = "\n".join(texts)
-        sentence = capability_sentence(False, self.gemini)
+        sentence = capability_sentence(False, browser=self.browser)
         self.add("welcome: one message, NLSQL AI Employee's first line",
                  len(got) == 1 and STRINGS["welcome"] in text, f"{len(got)} message(s)")
         self.add("welcome: names this stack's features, without Microsoft 365", sentence in text, sentence)
         self.add("welcome: no code mode, no sign-in off a Teams host",
                  not any(w in text for w in ("write code", "code mode", "`login`")), summary(texts))
-        if not self.gemini:
-            self.add("welcome: no browser or images without Gemini",
-                     "browse the web" not in text and "images" not in text, "")
+        if not self.browser:
+            self.add("welcome: no browsing with the browser agent off", "browse the web" not in text, "")
 
         texts, _ = self.say("/help", "/help", want=lambda t: sentence in t, expect="the capability sentence")
         text = "\n".join(texts)
         self.add("/help: no code mode, no sign-in, no /watch off a Teams host",
                  not any(w in text for w in ("code mode", "/projects", "`login`", "/watch")), "")
         self.add("/help: says why there is no sign-in", STRINGS["teams_only_sign_in"] in text, "")
-        if not self.gemini:
-            self.add("/help: no browser or images without Gemini",
-                     "browse the web" not in text and "images" not in text, "")
+        if not self.browser:
+            self.add("/help: no browsing with the browser agent off", "browse the web" not in text, "")
 
     def check_answer_and_storage(self):
         self.say("answer", "What is 17 multiplied by 23? Answer with the number only.",
@@ -1664,17 +1676,30 @@ class Run:
         self.say("refresh (Direct Line)", "refresh", conv=self.dl_conv, channel="directline",
                  want=lambda t: STRINGS["refreshed"] in t, expect=STRINGS["refreshed"])
 
-    def check_gemini_off(self):
-        log("Gemini off:")
+    def check_browser_off(self):
+        log("browser agent off:")
         since = int(time.time() * 1000) - 2000
         self.say("browse request", BROWSE_PROMPT)
-        image_url = self.service_url + "files/e2e-image.png"
-        self.say("image question", "What word is written in the attached image?",
-                 attachments=[{"contentType": "image/png", "contentUrl": image_url, "name": "e2e-image.png"}])
         lines = self.task_lines(since)
         marker = template_parts(STRINGS["tool_marker"])[0]
-        for tool in ("use_browser_agent", "read_image"):
-            self.add(f"Gemini off: no {tool} call", not any(marker + tool in line for line in lines), "")
+        self.add("browser agent off: no use_browser_agent call",
+                 not any(marker + "use_browser_agent" in line for line in lines), "")
+
+    def check_gemini_fallback(self, since):
+        """Gemini's fallback lines since the browser and image checks began:
+        each once at least with --gemini-fallback (the key fails), never
+        otherwise (Gemini answers, or Gemini is off)."""
+        log("Gemini fallback:")
+        lines = self.task_lines(since, wait=10)
+        expect = self.args.gemini_fallback
+        checks = [("gemini_image_failed", "read_image")]
+        if self.browser:
+            checks.insert(0, ("gemini_browser_failed", "the browser agent"))
+        for key, what in checks:
+            prefix = template_parts(STRINGS[key])[0]
+            seen = sum(prefix in line for line in lines)
+            self.add(f"{what}: Gemini's fallback line {'logged' if expect else 'absent'}",
+                     (seen > 0) == expect, f"{seen} line(s)")
 
     def check_live_view(self):
         log("live browser:")
@@ -1897,10 +1922,14 @@ class Run:
         self.add(f"'{probe}' logged by the running task", any(probe in m for m in boot), "")
         self.add("'Features: code mode is off' logged by the running task",
                  any(STRINGS["coder_off"] in m for m in boot), "")
-        gemini_off = any(STRINGS["gemini_off"] in m for m in boot)
-        self.add("'Features: browser agent and image recognition are off' "
+        browser_off = any(STRINGS["browser_off"] in m for m in boot)
+        self.add("'Features: the browser agent is off' "
+                 f"{'logged' if not self.browser else 'absent'} in the running task's start-up",
+                 browser_off != self.browser, "")
+        gemini_unset = any(STRINGS["gemini_unset"] in m for m in boot)
+        self.add("'Features: no GEMINI_API_KEY or GEMINI_MODEL' "
                  f"{'absent' if self.gemini else 'logged'} in the running task's start-up",
-                 gemini_off != self.gemini, "")
+                 gemini_unset != self.gemini, "")
         replies = captured(self.session, self.capture_log, self.since)
         self.add("no AccessKeyId in any reply", not any("AccessKeyId" in json.dumps(r["activity"]) for r in replies),
                  f"{len(replies)} captured request(s)")
@@ -1933,11 +1962,13 @@ def run_checks(args, session, env, app_id, secret, tenant):
     run.check_login()
     run.check_attachments()
     run.check_schedule()
-    if run.gemini:
+    browser_since = int(time.time() * 1000) - 2000
+    if run.browser:
         run.check_live_view()
-        run.check_images()
     else:
-        run.check_gemini_off()
+        run.check_browser_off()
+    run.check_images()
+    run.check_gemini_fallback(browser_since)
     run.check_refresh()
     run.check_logs(test_since)
     if args.restart_probe:
@@ -1955,7 +1986,7 @@ def parse_args(argv=None):
     ap.add_argument("--restart-probe", action="store_true",
                     help="at the end, stop the task and check /health's 503 sequence until the new one is UP")
     ap.add_argument("--ws-idle", type=int, default=WS_IDLE_DEFAULT, metavar="SECONDS",
-                    help=f"Gemini on: how long the live view's WebSocket stays idle (default {WS_IDLE_DEFAULT}, "
+                    help=f"how long the live view's WebSocket stays idle (default {WS_IDLE_DEFAULT}, "
                          "S4's 15 minutes; shorter for a quick run)")
     ap.add_argument("--login-url", default=os.environ.get("LOGIN_URL", ""),
                     help="the sign-in link of a real Teams login card, to check its tenant, client_id, "
@@ -1963,6 +1994,9 @@ def parse_args(argv=None):
                          "the command line)")
     ap.add_argument("--teardown", action="store_true", help="remove the capture function and role, then exit")
     ap.add_argument("--keep-capture", action="store_true", help="leave the capture function in place")
+    ap.add_argument("--gemini-fallback", action="store_true",
+                    help="Gemini on with a key that fails: expect the browser agent and read_image to log "
+                         "Gemini's failure and answer from Bedrock")
     args = ap.parse_args(argv)
     if args.ws_idle < 1:
         ap.error("--ws-idle must be at least 1 second")

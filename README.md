@@ -382,6 +382,20 @@ the org catalog. Then, on Teams desktop, web and mobile:
 
 ### Test record
 
+**1.0.1 as published, the buyer's path** (2026-11-04/05, seller account, us-east-1). The template
+from the listing's pinned URL, byte for byte the one at `fd126d4`, with its default `ImageUri`: the
+task pulled `709825985650.dkr.ecr.us-east-1.amazonaws.com/nlsql/ai-employee:1.0.1` (digest
+`sha256:e62d180d…a36a`) through the account's subscription. Every parameter at its default but the
+app IDs, `LanguageModel` Opus 5.5 and `Streaming`; Gemini off.
+
+| Test | Status |
+|---|---|
+| Creation, entitlement, Bedrock probe | pass |
+| e2e, `Streaming` false | pass, 101 of 101 |
+| Stack update to `Streaming` true, e2e with `--restart-probe` | 107 of 108: only the restart probe's unobservable gate (entitled 5 s before UP) |
+| Security probes (three forged or foreign tokens; a content-filtered prompt) | pass, 10 of 10 |
+| T6, both halves | pass |
+
 **1.0.1.** All runs on 2026-11-04 in the seller account, us-east-1, image `1.0.1-rc1` (digest
 `sha256:e62d180d…a36a`), `LanguageModel` `global.anthropic.claude-opus-5-5`, Gemini off (not
 tested: the owner's decision, the test key had no credits).
